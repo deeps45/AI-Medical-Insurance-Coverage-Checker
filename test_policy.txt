@@ -1,0 +1,24 @@
+MEDICAL INSURANCE POLICY
+
+Policy Number: TEST-12345
+Effective Date: January 1, 2024
+
+COVERAGE SUMMARY:
+- MRI Coverage: Covered with $50 copay after deductible
+- Emergency Room: $100 copay
+- Specialist Visits: $30 copay
+- Annual Deductible: $1,000
+- Out-of-Pocket Maximum: $5,000
+
+PRESCRIPTION DRUGS:
+- Generic: $10 copay
+- Brand Name: $25 copay
+- Specialty: $50 copay
+
+MENTAL HEALTH SERVICES:
+- Covered with $20 copay per session
+- 20 sessions per year
+
+PHYSICAL THERAPY:
+- Covered with $25 copay per session
+- 30 sessions per year
