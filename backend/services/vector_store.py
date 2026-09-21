@@ -30,7 +30,7 @@ class VectorStoreService:
     @property
     def is_ready(self) -> bool:
         self._ensure_initialized()
-        return self._store is not None or self._backend_name == "memory"
+        return self._backend_name in {"memory", "faiss", "pinecone"}
 
     def _ensure_initialized(self) -> None:
         if self._backend_name != "uninitialized":
@@ -41,24 +41,37 @@ class VectorStoreService:
             self._initialize()
 
     def _initialize(self) -> None:
+        from services.llm import has_llm_credentials, resolve_provider
+
+        provider = resolve_provider(self.settings)
+
         # Offline / test path: keyword memory store needs no API keys
-        if self.settings.use_local_vectorstore and not self.settings.openai_api_key:
+        if self.settings.use_local_vectorstore and not has_llm_credentials(self.settings):
             self._backend_name = "memory"
-            logger.info("Using in-memory keyword vector store (no OpenAI key)")
+            logger.info("Using in-memory keyword vector store (no LLM key)")
             return
 
-        if not self.settings.openai_api_key:
-            logger.warning("OPENAI_API_KEY not set; vector store unavailable")
+        if not has_llm_credentials(self.settings):
+            logger.warning("No TAMUS/OpenAI key set; vector store unavailable")
             self._backend_name = "unavailable"
             return
 
         try:
             from langchain_openai import OpenAIEmbeddings
 
-            self._embeddings = OpenAIEmbeddings(
-                model=self.settings.embedding_model,
-                api_key=self.settings.openai_api_key,
-            )
+            embed_kwargs: dict[str, Any] = {
+                "model": self.settings.embedding_model,
+                # TAMU Chat API expects string inputs, not token-id arrays
+                "check_embedding_ctx_length": False,
+            }
+            if provider == "tamu":
+                base = self.settings.tamus_api_endpoint.rstrip("/")
+                embed_kwargs["api_key"] = self.settings.tamus_api_key
+                embed_kwargs["base_url"] = f"{base}/api"
+            else:
+                embed_kwargs["api_key"] = self.settings.openai_api_key
+
+            self._embeddings = OpenAIEmbeddings(**embed_kwargs)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not initialize embeddings: %s", exc)
             if self.settings.use_local_vectorstore:

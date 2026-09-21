@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from config import Settings, get_settings
+from services.llm import chat_completion, resolve_provider
 
 logger = logging.getLogger(__name__)
 
@@ -43,25 +43,21 @@ def generate_answer(
         )
 
     prompt = build_prompt(question, context)
+    provider = resolve_provider(settings)
 
-    # Offline / test mode: return a deterministic extractive answer
-    if os.getenv("QA_MODE", "").lower() == "extractive" or not settings.openai_api_key:
+    if provider == "none":
         return _extractive_answer(question, docs)
 
-    from openai import OpenAI
-
-    client = OpenAI(api_key=settings.openai_api_key)
-    response = client.chat.completions.create(
-        model=settings.chat_model,
-        messages=[{"role": "user", "content": prompt}],
+    return chat_completion(
+        [{"role": "user", "content": prompt}],
+        settings,
         temperature=0.2,
         max_tokens=600,
     )
-    return response.choices[0].message.content.strip()
 
 
 def _extractive_answer(question: str, docs: list[Any]) -> str:
-    """Fallback answer builder for tests without calling OpenAI."""
+    """Fallback answer builder for tests without calling an LLM API."""
     snippets = []
     for doc in docs[:3]:
         page = doc.metadata.get("page", "?")
@@ -69,5 +65,5 @@ def _extractive_answer(question: str, docs: list[Any]) -> str:
     joined = "\n\n".join(snippets)
     return (
         f"Based on the policy text related to '{question}':\n\n{joined}\n\n"
-        "(Extractive mode — set OPENAI_API_KEY for full AI answers.)"
+        "(Extractive mode — set TAMUS_AI_CHAT_API_KEY or OPENAI_API_KEY for full AI answers.)"
     )

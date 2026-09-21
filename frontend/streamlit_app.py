@@ -82,7 +82,9 @@ with st.sidebar:
     if health:
         st.success("Backend connected")
         st.caption(
-            f"Vector store: `{health.get('vectorstore', '?')}` · "
+            f"LLM: `{health.get('llm_provider', '?')}` · "
+            f"model: `{health.get('chat_model') or 'n/a'}` · "
+            f"vectors: `{health.get('vectorstore', '?')}` · "
             f"DB: `{health.get('database', '?')}`"
         )
     else:

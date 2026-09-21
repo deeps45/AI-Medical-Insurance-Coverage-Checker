@@ -44,4 +44,6 @@ class HealthResponse(BaseModel):
     status: str
     vectorstore: str
     database: str
+    llm_provider: str
+    chat_model: str
     message: str

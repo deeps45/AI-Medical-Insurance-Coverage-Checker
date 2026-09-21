@@ -33,8 +33,15 @@ Streamlit (8502)  →  FastAPI (8001)  →  PostgreSQL
 
 ```bash
 cp backend/env.example backend/.env
-# Edit backend/.env and set OPENAI_API_KEY (and PINECONE_API_KEY if desired)
+# Edit backend/.env and set:
+#   TAMUS_AI_CHAT_API_KEY=...   (preferred — TAMU Chat API)
+# or OPENAI_API_KEY=...
 ```
+
+With a TAMU key the app defaults to:
+- Chat: `protected.gemini-2.5-flash-lite`
+- Embeddings: `protected.text-embedding-3-small`
+- Endpoint: `https://chat-api.tamu.ai`
 
 For local development without Pinecone, keep:
 
@@ -99,11 +106,14 @@ curl -X POST "http://localhost:8001/ask" \
 
 | Variable | Purpose |
 |----------|---------|
-| `OPENAI_API_KEY` | Embeddings + chat completions |
+| `TAMUS_AI_CHAT_API_KEY` | Preferred LLM + embeddings via TAMU Chat API |
+| `TAMUS_AI_CHAT_API_ENDPOINT` | Default `https://chat-api.tamu.ai` |
+| `OPENAI_API_KEY` | Fallback if TAMU key is unset |
 | `PINECONE_API_KEY` | Managed vector DB |
 | `PINECONE_INDEX_NAME` | Pinecone index name |
 | `USE_LOCAL_VECTORSTORE` | Prefer FAISS/memory over Pinecone |
-| `QA_MODE=extractive` | Skip OpenAI chat (tests / offline demos) |
+| `QA_MODE=extractive` | Skip LLM chat (tests / offline demos) |
+| `CHAT_MODEL` / `EMBEDDING_MODEL` | Model IDs (TAMU uses `protected.*` names) |
 | `DATABASE_URL` | Postgres or SQLite connection string |
 
 ## Project layout

@@ -20,6 +20,7 @@ from schemas import (
     IngestResponse,
     SourceInfo,
 )
+from services.llm import resolve_provider
 from services.pdf_extractor import chunk_pages, extract_pages_from_pdf
 from services.qa import generate_answer
 from services.vector_store import get_vector_store
@@ -61,10 +62,13 @@ def _db_status() -> str:
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     store = get_vector_store()
+    provider = resolve_provider(settings)
     return HealthResponse(
         status="ok",
         vectorstore=store.backend_name,
         database=_db_status(),
+        llm_provider=provider,
+        chat_model=settings.chat_model if provider != "none" else "",
         message="Backend is running",
     )
 
@@ -128,8 +132,8 @@ async def ingest_document(file: UploadFile = File(...)):
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "Vector store unavailable. Set OPENAI_API_KEY and optionally "
-                    "PINECONE_API_KEY, or USE_LOCAL_VECTORSTORE=true."
+                    "Vector store unavailable. Set TAMUS_AI_CHAT_API_KEY or "
+                    "OPENAI_API_KEY (and optionally USE_LOCAL_VECTORSTORE=true)."
                 ),
             )
         store.add_texts(texts, metadatas)
