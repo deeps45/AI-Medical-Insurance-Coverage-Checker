@@ -23,27 +23,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- Styles ---
 st.markdown(
     """
     <style>
       .block-container { padding-top: 1.5rem; max-width: 1100px; }
-      .answer-box {
-        background: #f7fafc;
-        border-left: 4px solid #0d9488;
-        padding: 1rem 1.25rem;
-        border-radius: 0 8px 8px 0;
-        margin: 0.5rem 0 1rem;
-      }
-      .source-chip {
-        display: inline-block;
-        background: #ecfeff;
-        color: #0f766e;
-        padding: 0.15rem 0.55rem;
-        border-radius: 4px;
-        margin: 0.15rem 0.25rem 0.15rem 0;
-        font-size: 0.85rem;
-      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -60,6 +43,16 @@ def check_backend() -> dict | None:
     return None
 
 
+def fetch_documents() -> list[dict]:
+    try:
+        response = requests.get(f"{BASE_URL}/documents", timeout=10)
+        if response.status_code == 200:
+            return response.json()
+    except requests.RequestException:
+        return []
+    return []
+
+
 def init_state() -> None:
     defaults = {
         "document_info": None,
@@ -71,9 +64,23 @@ def init_state() -> None:
             st.session_state[key] = value
 
 
+def history_transcript() -> str:
+    lines = []
+    for item in reversed(st.session_state.qa_history):
+        lines.append(f"Q: {item['question']}")
+        lines.append(f"A: {item['answer']}")
+        if item.get("sources"):
+            src = ", ".join(
+                f"{s.get('source', '?')} p{s.get('page', '?')}" for s in item["sources"]
+            )
+            lines.append(f"Sources: {src}")
+        lines.append(f"Latency: {item['latency_ms']:.0f} ms")
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
 init_state()
 
-# --- Sidebar ---
 with st.sidebar:
     st.markdown("### Coverage Checker")
     st.caption("Understand your medical insurance policy in plain language.")
@@ -93,28 +100,47 @@ with st.sidebar:
         st.stop()
 
     st.divider()
+    st.markdown("**Recent documents**")
+    docs = fetch_documents()
+    if docs:
+        labels = {
+            f"{d['filename']} ({d['page_count']}p · {d['id'][:8]}…)": d for d in docs[:15]
+        }
+        choice = st.selectbox("Load a previous upload", ["—"] + list(labels.keys()))
+        if choice != "—" and st.button("Use selected document", use_container_width=True):
+            selected = labels[choice]
+            st.session_state.document_info = {
+                "document_id": selected["id"],
+                "pages": selected["page_count"],
+                "chunks": selected.get("chunk_count", 0),
+                "filename": selected["filename"],
+            }
+            st.session_state.qa_history = []
+            st.rerun()
+    else:
+        st.caption("No documents yet.")
+
+    st.divider()
     st.markdown("**Tips**")
     st.markdown(
         "- Upload the full policy PDF\n"
         "- Ask about copays, deductibles, exclusions\n"
         "- Answers cite page numbers when possible"
     )
+    st.warning(
+        "Assistive only — not official benefits advice. "
+        "Verify with your insurer or plan documents."
+    )
 
-# --- Header ---
 st.title("Medical Insurance Coverage Checker")
 st.markdown(
     "Upload a policy PDF, then ask questions about coverage, copays, and benefits."
 )
 
-# --- Upload ---
 st.subheader("1. Upload policy")
 uploaded_file = st.file_uploader("Insurance policy PDF", type=["pdf"])
 
-col_a, col_b = st.columns([1, 3])
-with col_a:
-    process = st.button("Process PDF", type="primary", disabled=uploaded_file is None)
-
-if process and uploaded_file is not None:
+if st.button("Process PDF", type="primary", disabled=uploaded_file is None):
     with st.spinner("Extracting text and building search index..."):
         try:
             files = {
@@ -140,12 +166,13 @@ if info:
     m1.metric("Pages", info["pages"])
     m2.metric("Chunks", info["chunks"])
     m3.metric("Document", info["document_id"][:8] + "…")
+    if info.get("filename"):
+        st.caption(f"Active file: **{info['filename']}**")
 
-# --- Ask ---
 st.subheader("2. Ask about coverage")
 
 if not info:
-    st.info("Upload and process a PDF to enable questions.")
+    st.info("Upload and process a PDF (or pick a recent document in the sidebar).")
     st.stop()
 
 examples = [
@@ -172,7 +199,11 @@ question = st.text_input(
 
 k_chunks = st.slider("Context passages to retrieve", 1, 10, 4, key="k_slider")
 
-ask = st.button("Ask", type="primary", disabled=not question.strip())
+c1, c2, c3 = st.columns([1, 1, 2])
+ask = c1.button("Ask", type="primary", disabled=not question.strip())
+if c2.button("Clear history", disabled=not st.session_state.qa_history):
+    st.session_state.qa_history = []
+    st.rerun()
 
 if ask and question.strip():
     with st.spinner("Searching policy and drafting answer..."):
@@ -182,7 +213,7 @@ if ask and question.strip():
                 "k": k_chunks,
                 "document_id": info["document_id"],
             }
-            response = requests.post(f"{BASE_URL}/ask", json=payload, timeout=60)
+            response = requests.post(f"{BASE_URL}/ask", json=payload, timeout=90)
             if response.status_code == 200:
                 result = response.json()
                 st.session_state.qa_history.insert(
@@ -201,7 +232,14 @@ if ask and question.strip():
         except requests.RequestException as exc:
             st.error(f"Could not reach backend: {exc}")
 
-# --- History ---
+if st.session_state.qa_history:
+    st.download_button(
+        "Download Q&A transcript",
+        data=history_transcript(),
+        file_name="coverage-qa.txt",
+        mime="text/plain",
+    )
+
 for item in st.session_state.qa_history:
     st.markdown(f"**Q:** {item['question']}")
     st.info(item["answer"])
@@ -213,4 +251,4 @@ for item in st.session_state.qa_history:
     st.caption(f"{item['latency_ms']:.0f} ms · {item['ts']}")
     st.divider()
 
-st.caption("Coverage Checker · LangChain · OpenAI · Pinecone/FAISS")
+st.caption("Coverage Checker · TAMU Chat / OpenAI · Pinecone/FAISS · Streamlit")

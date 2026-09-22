@@ -60,3 +60,28 @@ def test_extractive_generate_answer():
     answer = generate_answer("ER copay?", docs, settings=_settings())
     assert "100" in answer
     assert "[p2]" in answer
+
+
+def test_dedupe_sources():
+    from types import SimpleNamespace
+
+    from services.qa import dedupe_sources
+
+    docs = [
+        SimpleNamespace(metadata={"page": 1, "source": "a.pdf", "document_id": "d1"}),
+        SimpleNamespace(metadata={"page": 1, "source": "a.pdf", "document_id": "d1"}),
+        SimpleNamespace(metadata={"page": 2, "source": "a.pdf", "document_id": "d1"}),
+    ]
+    sources = dedupe_sources(docs)
+    assert len(sources) == 2
+    assert sources[0]["page"] == 1
+    assert sources[1]["page"] == 2
+
+
+def test_build_messages_has_system_role():
+    from services.qa import build_messages
+
+    messages = build_messages("What is the deductible?", "Annual Deductible: $1,000")
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    assert "$1,000" in messages[1]["content"]

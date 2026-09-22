@@ -15,10 +15,12 @@ Answer ONLY using the provided policy context.
 Cite page numbers like [p3] when evidence supports the answer.
 If the context is insufficient, say you don't know and suggest what to look for in the policy.
 Do not invent coverage amounts, copays, or exclusions.
-Be concise and clear."""
+Be concise and clear.
+End with a one-line reminder that this is not official benefits advice."""
 
 
 def build_prompt(question: str, context: str) -> str:
+    """Legacy single-string prompt (used by extractive/tests)."""
     return f"""{SYSTEM_PROMPT}
 
 Context:
@@ -27,6 +29,42 @@ Context:
 Question: {question}
 
 Answer:"""
+
+
+def build_messages(question: str, context: str) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"Policy context:\n{context}\n\n"
+                f"Question: {question}\n\n"
+                "Answer using only the context above."
+            ),
+        },
+    ]
+
+
+def dedupe_sources(docs: list[Any]) -> list[dict[str, Any]]:
+    """Unique (source, page, document_id) triples preserving retrieval order."""
+    seen: set[tuple] = set()
+    sources: list[dict[str, Any]] = []
+    for doc in docs:
+        if not hasattr(doc, "metadata"):
+            continue
+        meta = doc.metadata or {}
+        key = (meta.get("source"), meta.get("page"), meta.get("document_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append(
+            {
+                "page": meta.get("page", "Unknown"),
+                "source": meta.get("source", "Unknown"),
+                "document_id": meta.get("document_id"),
+            }
+        )
+    return sources
 
 
 def generate_answer(
@@ -42,14 +80,12 @@ def generate_answer(
             "Try rephrasing your question or uploading a clearer document."
         )
 
-    prompt = build_prompt(question, context)
     provider = resolve_provider(settings)
-
     if provider == "none":
         return _extractive_answer(question, docs)
 
     return chat_completion(
-        [{"role": "user", "content": prompt}],
+        build_messages(question, context),
         settings,
         temperature=0.2,
         max_tokens=600,

@@ -22,7 +22,7 @@ from schemas import (
 )
 from services.llm import resolve_provider
 from services.pdf_extractor import chunk_pages, extract_pages_from_pdf
-from services.qa import generate_answer
+from services.qa import dedupe_sources, generate_answer
 from services.vector_store import get_vector_store
 
 logging.basicConfig(level=logging.INFO)
@@ -182,15 +182,7 @@ async def ask_question(request: AskRequest):
         answer = generate_answer(request.question, docs, settings)
         latency_ms = (time.time() - start) * 1000
 
-        sources = [
-            SourceInfo(
-                page=doc.metadata.get("page", "Unknown"),
-                source=doc.metadata.get("source", "Unknown"),
-                document_id=doc.metadata.get("document_id"),
-            )
-            for doc in docs
-            if hasattr(doc, "metadata")
-        ]
+        sources = [SourceInfo(**item) for item in dedupe_sources(docs)]
 
         db = SessionLocal()
         try:
