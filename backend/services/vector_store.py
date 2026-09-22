@@ -1,9 +1,12 @@
-"""Vector store abstraction with Pinecone or local FAISS fallback."""
+"""Vector store with Pinecone or per-document persistent FAISS."""
 
 from __future__ import annotations
 
+import json
 import logging
+import shutil
 import threading
+from pathlib import Path
 from typing import Any, Optional
 
 from config import Settings, get_settings
@@ -12,15 +15,17 @@ logger = logging.getLogger(__name__)
 
 
 class VectorStoreService:
-    """Lazy-initialized vector store supporting Pinecone or in-memory FAISS."""
+    """Lazy-initialized vector store supporting Pinecone or on-disk FAISS."""
 
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
         self._lock = threading.Lock()
         self._embeddings = None
-        self._store = None
+        self._store = None  # shared pinecone / legacy single faiss
         self._backend_name = "uninitialized"
         self._local_texts: list[dict[str, Any]] = []
+        self._faiss_cls = None
+        self._doc_stores: dict[str, Any] = {}  # document_id -> FAISS
 
     @property
     def backend_name(self) -> str:
@@ -45,7 +50,6 @@ class VectorStoreService:
 
         provider = resolve_provider(self.settings)
 
-        # Offline / test path: keyword memory store needs no API keys
         if self.settings.use_local_vectorstore and not has_llm_credentials(self.settings):
             self._backend_name = "memory"
             logger.info("Using in-memory keyword vector store (no LLM key)")
@@ -61,7 +65,6 @@ class VectorStoreService:
 
             embed_kwargs: dict[str, Any] = {
                 "model": self.settings.embedding_model,
-                # TAMU Chat API expects string inputs, not token-id arrays
                 "check_embedding_ctx_length": False,
             }
             if provider == "tamu":
@@ -114,41 +117,84 @@ class VectorStoreService:
         try:
             from langchain_community.vectorstores import FAISS
 
-            # Empty FAISS store seeded on first add_texts
-            self._store = None
             self._faiss_cls = FAISS
+            self._store = None
+            self.settings.faiss_dir.mkdir(parents=True, exist_ok=True)
             self._backend_name = "faiss"
-            logger.info("Using local FAISS vector store")
+            logger.info("Using persistent FAISS at %s", self.settings.faiss_dir)
         except Exception as exc:  # noqa: BLE001
             logger.warning("FAISS unavailable (%s); using simple memory store", exc)
             self._store = None
             self._backend_name = "memory"
 
+    def _doc_dir(self, document_id: str) -> Path:
+        return self.settings.faiss_dir / document_id
+
+    def _save_faiss(self, document_id: str, store: Any) -> None:
+        path = self._doc_dir(document_id)
+        path.mkdir(parents=True, exist_ok=True)
+        store.save_local(str(path))
+        meta_path = path / "meta.json"
+        meta_path.write_text(json.dumps({"document_id": document_id}))
+
+    def _load_faiss(self, document_id: str) -> Any | None:
+        if document_id in self._doc_stores:
+            return self._doc_stores[document_id]
+        path = self._doc_dir(document_id)
+        if not path.exists() or not (path / "index.faiss").exists():
+            return None
+        store = self._faiss_cls.load_local(
+            str(path),
+            self._embeddings,
+            allow_dangerous_deserialization=True,
+        )
+        self._doc_stores[document_id] = store
+        return store
+
     def add_texts(
         self,
         texts: list[str],
         metadatas: list[dict[str, Any]],
+        *,
+        document_id: str | None = None,
+        replace: bool = False,
     ) -> None:
         self._ensure_initialized()
         if self._backend_name == "unavailable":
             raise RuntimeError("Vector store is not available")
 
+        if document_id is None and metadatas:
+            document_id = metadatas[0].get("document_id")
+
         if self._backend_name == "memory":
+            if replace and document_id:
+                self._local_texts = [
+                    t
+                    for t in self._local_texts
+                    if t["metadata"].get("document_id") != document_id
+                ]
             for text, meta in zip(texts, metadatas):
                 self._local_texts.append({"text": text, "metadata": meta})
             return
 
         if self._backend_name == "faiss":
-            if self._store is None:
-                self._store = self._faiss_cls.from_texts(
-                    texts, self._embeddings, metadatas=metadatas
-                )
-            else:
-                self._store.add_texts(texts, metadatas=metadatas)
+            if not document_id:
+                raise ValueError("document_id is required for FAISS persistence")
+            if replace:
+                self.delete_document(document_id)
+            store = self._faiss_cls.from_texts(
+                texts, self._embeddings, metadatas=metadatas
+            )
+            self._doc_stores[document_id] = store
+            self._save_faiss(document_id, store)
             return
 
+        # Pinecone
         assert self._store is not None
-        self._store.add_texts(texts, metadatas=metadatas)
+        if replace and document_id:
+            self.delete_document(document_id)
+        ids = [f"{document_id}-{i}" for i in range(len(texts))] if document_id else None
+        self._store.add_texts(texts, metadatas=metadatas, ids=ids)
 
     def similarity_search(
         self,
@@ -163,24 +209,84 @@ class VectorStoreService:
         if self._backend_name == "memory":
             return self._memory_search(query, k, document_id)
 
-        filter_dict = {"document_id": document_id} if document_id else None
-
         if self._backend_name == "faiss":
-            if self._store is None:
-                return []
-            docs = self._store.similarity_search(query, k=k * 3 if document_id else k)
             if document_id:
-                docs = [d for d in docs if d.metadata.get("document_id") == document_id][:k]
-            return docs
+                store = self._load_faiss(document_id)
+                if store is None:
+                    return []
+                return store.similarity_search(query, k=k)
+            # Search across all known docs (best-effort)
+            results: list[Any] = []
+            for path in self.settings.faiss_dir.glob("*"):
+                if not path.is_dir():
+                    continue
+                store = self._load_faiss(path.name)
+                if store is None:
+                    continue
+                results.extend(store.similarity_search(query, k=k))
+            # crude re-rank by presence; truncate
+            return results[:k]
 
         assert self._store is not None
+        filter_dict = {"document_id": document_id} if document_id else None
         if filter_dict:
             try:
                 return self._store.similarity_search(query, k=k, filter=filter_dict)
-            except Exception:  # noqa: BLE001 - some backends reject filters
+            except Exception:  # noqa: BLE001
                 docs = self._store.similarity_search(query, k=k * 3)
-                return [d for d in docs if d.metadata.get("document_id") == document_id][:k]
+                return [d for d in docs if d.metadata.get("document_id") == document_id][
+                    :k
+                ]
         return self._store.similarity_search(query, k=k)
+
+    def delete_document(self, document_id: str) -> bool:
+        """Remove vectors for a document. Returns True if something was removed."""
+        self._ensure_initialized()
+        removed = False
+
+        if self._backend_name == "memory":
+            before = len(self._local_texts)
+            self._local_texts = [
+                t
+                for t in self._local_texts
+                if t["metadata"].get("document_id") != document_id
+            ]
+            return len(self._local_texts) < before
+
+        if self._backend_name == "faiss":
+            self._doc_stores.pop(document_id, None)
+            path = self._doc_dir(document_id)
+            if path.exists():
+                shutil.rmtree(path, ignore_errors=True)
+                removed = True
+            return removed
+
+        # Pinecone: delete by metadata filter when supported
+        try:
+            index = getattr(self._store, "_index", None) or getattr(
+                self._store, "index", None
+            )
+            if index is not None:
+                index.delete(filter={"document_id": {"$eq": document_id}})
+                removed = True
+            else:
+                # Fallback: delete known ids pattern
+                ids = [f"{document_id}-{i}" for i in range(5000)]
+                self._store.delete(ids=ids)  # type: ignore[attr-defined]
+                removed = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Pinecone delete failed for %s: %s", document_id, exc)
+        return removed
+
+    def has_document(self, document_id: str) -> bool:
+        self._ensure_initialized()
+        if self._backend_name == "memory":
+            return any(
+                t["metadata"].get("document_id") == document_id for t in self._local_texts
+            )
+        if self._backend_name == "faiss":
+            return self._doc_dir(document_id).exists()
+        return True  # pinecone: assume present if metadata says so
 
     def _memory_search(
         self,
@@ -188,7 +294,6 @@ class VectorStoreService:
         k: int,
         document_id: Optional[str],
     ) -> list[Any]:
-        """Simple keyword-overlap retrieval for offline/unit tests."""
         from types import SimpleNamespace
 
         tokens = {t.lower() for t in query.split() if len(t) > 2}
@@ -200,12 +305,10 @@ class VectorStoreService:
             score = len(tokens & text_tokens)
             scored.append((score, item))
         scored.sort(key=lambda x: x[0], reverse=True)
-        results = []
-        for score, item in scored[:k]:
-            results.append(
-                SimpleNamespace(page_content=item["text"], metadata=item["metadata"])
-            )
-        return results
+        return [
+            SimpleNamespace(page_content=item["text"], metadata=item["metadata"])
+            for _, item in scored[:k]
+        ]
 
 
 _vector_service: VectorStoreService | None = None
@@ -219,7 +322,6 @@ def get_vector_store() -> VectorStoreService:
 
 
 def reset_vector_store(service: VectorStoreService | None = None) -> VectorStoreService:
-    """Replace the singleton (used by tests)."""
     global _vector_service
     _vector_service = service if service is not None else VectorStoreService()
     return _vector_service

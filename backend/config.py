@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -24,6 +25,10 @@ class Settings:
     use_local_vectorstore: bool
     qa_mode: str
     cors_origins: list[str]
+    api_key: str | None
+    rate_limit_per_minute: int
+    faiss_dir: Path
+    enable_auth: bool
 
 
 def get_settings() -> Settings:
@@ -32,14 +37,16 @@ def get_settings() -> Settings:
 
     tamus_key = os.getenv("TAMUS_AI_CHAT_API_KEY") or None
     openai_key = os.getenv("OPENAI_API_KEY") or None
+    api_key = os.getenv("APP_API_KEY") or None
 
-    # Sensible defaults: TAMU models when TAMU key is present
     if tamus_key:
         default_chat = "protected.gemini-2.5-flash-lite"
         default_embed = "protected.text-embedding-3-small"
     else:
         default_chat = "gpt-4o-mini"
         default_embed = "text-embedding-3-small"
+
+    faiss_dir = Path(os.getenv("FAISS_DIR", "./data/faiss")).resolve()
 
     return Settings(
         openai_api_key=openai_key,
@@ -57,4 +64,8 @@ def get_settings() -> Settings:
         in {"1", "true", "yes"},
         qa_mode=os.getenv("QA_MODE", "").lower(),
         cors_origins=origins,
+        api_key=api_key,
+        rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "60")),
+        faiss_dir=faiss_dir,
+        enable_auth=os.getenv("ENABLE_AUTH", "false").lower() in {"1", "true", "yes"},
     )

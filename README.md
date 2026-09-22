@@ -9,11 +9,14 @@ Upload a medical insurance policy PDF and ask plain-language questions about cov
 - PDF text extraction via PyMuPDF, with Tesseract OCR fallback for scanned pages
 - RAG Q&A with accurate per-chunk page metadata and optional document scoping
 - TAMU Chat API (preferred) or OpenAI for chat + embeddings
-- Pinecone vector search in production, or local FAISS / in-memory store for development and tests
+- **Persistent per-document FAISS indexes** (survive restarts) or Pinecone in production
+- **Delete / re-ingest** document APIs for clean policy management
+- Optional **API key auth** (`ENABLE_AUTH` + `APP_API_KEY`) and per-client **rate limiting**
+- **Streaming answers** (`/ask/stream`) and one-click **coverage summary**
 - PostgreSQL (or SQLite) storage for documents and query history
 - Streamlit UI with example questions, answer history, citations, and latency
 - Docker Compose stack ready for local runs and Render-style deploys
-- Pytest suite that runs offline without API keys
+- Pytest suite that runs offline without API keys (+ OCR when Tesseract is installed)
 
 ## Architecture
 
@@ -138,7 +141,11 @@ Tests use extractive answers and an in-memory/FAISS vector store — no API keys
 | GET | `/health` | Liveness + vector store / DB / LLM provider status |
 | GET | `/documents` | Recent uploaded documents |
 | POST | `/ingest` | Upload and index a PDF |
+| PUT | `/documents/{id}/reingest` | Replace vectors for an existing document |
+| DELETE | `/documents/{id}` | Delete document metadata + vectors |
 | POST | `/ask` | Ask a question (`question`, optional `k`, optional `document_id`) |
+| POST | `/ask/stream` | Same as `/ask` but SSE token stream |
+| POST | `/summary` | One-click coverage snapshot for a document |
 
 ### Upload PDF
 
@@ -232,6 +239,9 @@ CREATE TABLE queries (
 | `PINECONE_API_KEY` | Managed vector DB |
 | `PINECONE_INDEX_NAME` | Pinecone index name |
 | `USE_LOCAL_VECTORSTORE` | Prefer FAISS/memory over Pinecone |
+| `FAISS_DIR` | On-disk FAISS root (default `./data/faiss`) |
+| `ENABLE_AUTH` / `APP_API_KEY` | Optional API key gate (`X-API-Key` or Bearer) |
+| `RATE_LIMIT_PER_MINUTE` | Per-client limit (default 60) |
 | `QA_MODE=extractive` | Skip LLM chat (tests / offline demos) |
 | `CHAT_MODEL` / `EMBEDDING_MODEL` | Model IDs (TAMU uses `protected.*` names) |
 | `DATABASE_URL` | Postgres or SQLite connection string |

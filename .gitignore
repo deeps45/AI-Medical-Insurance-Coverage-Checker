@@ -64,3 +64,5 @@ logs/
 # Local vector store / pinecone scratch
 pinecone_test/
 faiss_index/
+data/
+backend/data/

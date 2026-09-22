@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,8 +26,14 @@ services:
     environment:
       - DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/docsage
       - USE_LOCAL_VECTORSTORE=${USE_LOCAL_VECTORSTORE:-true}
+      - FAISS_DIR=/app/data/faiss
+      - ENABLE_AUTH=${ENABLE_AUTH:-false}
+      - APP_API_KEY=${APP_API_KEY:-}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-60}
     env_file:
       - ./backend/.env
+    volumes:
+      - faiss_data:/app/data/faiss
     depends_on:
       db:
         condition: service_healthy
@@ -36,7 +42,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 30s
     networks:
       - coverage-network
     restart: unless-stopped
@@ -49,6 +55,7 @@ services:
     environment:
       - BASE_URL=http://backend:8000
       - RENDER=false
+      - APP_API_KEY=${APP_API_KEY:-}
     depends_on:
       backend:
         condition: service_healthy
@@ -58,6 +65,8 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  faiss_data:
     driver: local
 
 networks:

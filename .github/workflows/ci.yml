@@ -14,11 +14,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install dependencies
+      - name: Install system OCR deps
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+      - name: Install Python dependencies
         run: pip install -r backend/requirements.txt
       - name: Run tests
         env:
           QA_MODE: extractive
           USE_LOCAL_VECTORSTORE: "true"
+          ENABLE_AUTH: "false"
           DATABASE_URL: sqlite:///./ci.db
+          FAISS_DIR: ./data/faiss-ci
         run: pytest -q
+      - name: Pinecone smoke (optional)
+        env:
+          PINECONE_SMOKE: ${{ secrets.PINECONE_SMOKE || '0' }}
+          PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+          PINECONE_INDEX_NAME: ${{ secrets.PINECONE_INDEX_NAME || 'docsage-lite' }}
+        run: python scripts/pinecone_smoke.py

@@ -5,18 +5,25 @@ services:
     plan: starter
     region: oregon
     branch: main
-    buildCommand: docker build -t ai-medical-insurance-checker .
-    startCommand: docker run -p 10000:8501 ai-medical-insurance-checker
+    dockerfilePath: ./Dockerfile
     healthCheckPath: /
     envVars:
+      - key: TAMUS_AI_CHAT_API_KEY
+        sync: false
+      - key: TAMUS_AI_CHAT_API_ENDPOINT
+        value: https://chat-api.tamu.ai
       - key: OPENAI_API_KEY
         sync: false
       - key: PINECONE_API_KEY
         sync: false
-      - key: PINECONE_ENVIRONMENT
-        value: us-east-1-aws
       - key: PINECONE_INDEX_NAME
         value: docsage-lite
+      - key: USE_LOCAL_VECTORSTORE
+        value: "true"
+      - key: ENABLE_AUTH
+        value: "false"
+      - key: APP_API_KEY
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: ai-medical-insurance-db
@@ -24,11 +31,13 @@ services:
       - key: BASE_URL
         value: http://localhost:8000
       - key: RENDER
-        value: true
+        value: "true"
       - key: TESSERACT_CMD
         value: /usr/bin/tesseract
+      - key: FAISS_DIR
+        value: /app/data/faiss
       - key: PORT
-        value: 8501
+        value: "8501"
 
 databases:
   - name: ai-medical-insurance-db

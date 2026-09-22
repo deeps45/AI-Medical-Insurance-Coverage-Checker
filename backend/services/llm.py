@@ -56,3 +56,29 @@ def chat_completion(
         stream=False,
     )
     return response.choices[0].message.content.strip()
+
+
+def stream_chat_completion(
+    messages: list[dict],
+    settings: Settings | None = None,
+    *,
+    temperature: float = 0.2,
+    max_tokens: int = 600,
+):
+    """Yield text deltas from a streaming chat completion."""
+    settings = settings or get_settings()
+    client = get_openai_compatible_client(settings)
+    stream = client.chat.completions.create(
+        model=settings.chat_model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stream=True,
+    )
+    for chunk in stream:
+        try:
+            delta = chunk.choices[0].delta.content
+        except (AttributeError, IndexError):
+            delta = None
+        if delta:
+            yield delta
