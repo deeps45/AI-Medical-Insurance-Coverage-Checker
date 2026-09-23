@@ -162,6 +162,21 @@ def _process_pdf(content: bytes, filename: str, document_id: str | None = None) 
     )
 
 
+def _require_document_index(document_id: str | None) -> None:
+    """On free/ephemeral hosts, FAISS can vanish after sleep — force a clear re-upload."""
+    if not document_id:
+        return
+    store = get_vector_store()
+    if store.backend_name == "faiss" and not store.has_document(document_id):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Search index for this document is missing (common after free-tier sleep "
+                "or redeploy). Please re-upload / re-ingest the PDF."
+            ),
+        )
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     store = get_vector_store()
@@ -179,20 +194,27 @@ async def health_check():
 
 @app.get("/documents", response_model=list[DocumentInfo])
 async def list_documents(_: str | None = Depends(require_api_key)):
+    store = get_vector_store()
     db = SessionLocal()
     try:
         rows = db.query(Document).order_by(Document.uploaded_at.desc()).limit(50).all()
-        return [
-            DocumentInfo(
-                id=row.id,
-                filename=row.filename,
-                page_count=row.page_count,
-                chunk_count=row.chunk_count or 0,
-                status=getattr(row, "status", None) or "ready",
-                uploaded_at=row.uploaded_at.isoformat(),
+        results: list[DocumentInfo] = []
+        for row in rows:
+            indexed = True
+            if store.backend_name == "faiss":
+                indexed = store.has_document(row.id)
+            results.append(
+                DocumentInfo(
+                    id=row.id,
+                    filename=row.filename,
+                    page_count=row.page_count,
+                    chunk_count=row.chunk_count or 0,
+                    status=("needs_reupload" if not indexed else (getattr(row, "status", None) or "ready")),
+                    uploaded_at=row.uploaded_at.isoformat(),
+                    indexed=indexed,
+                )
             )
-            for row in rows
-        ]
+        return results
     finally:
         db.close()
 
@@ -339,6 +361,7 @@ async def ask_question(
         )
     if not payload.question.strip():
         raise HTTPException(status_code=400, detail="Please enter a non-empty question.")
+    _require_document_index(payload.document_id)
 
     start = time.time()
     try:
@@ -377,6 +400,7 @@ async def ask_question_stream(
 
 async def _ask_stream(payload: AskRequest):
     store = get_vector_store()
+    _require_document_index(payload.document_id)
     docs = store.similarity_search(
         payload.question,
         k=payload.k or 4,
@@ -453,6 +477,7 @@ async def coverage_summary(
     store = get_vector_store()
     if not store.is_ready:
         raise HTTPException(status_code=503, detail="Vector store not available")
+    _require_document_index(payload.document_id)
 
     start = time.time()
     question = (

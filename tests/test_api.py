@@ -121,6 +121,33 @@ def test_cleanup_endpoint(client):
     assert "queries" in body
 
 
+def test_ask_missing_index_returns_409(client, sample_pdf_bytes):
+    ingest = client.post(
+        "/ingest",
+        files={"file": ("policy.pdf", sample_pdf_bytes, "application/pdf")},
+    )
+    assert ingest.status_code == 200
+    document_id = ingest.json()["document_id"]
+
+    # Simulate free-tier ephemeral loss: drop on-disk index + in-memory cache
+    from services.vector_store import get_vector_store
+
+    store = get_vector_store()
+    store._doc_stores.pop(document_id, None)
+    path = store._doc_dir(document_id)
+    if path.exists():
+        import shutil
+
+        shutil.rmtree(path)
+
+    ask = client.post(
+        "/ask",
+        json={"question": "What is the deductible?", "document_id": document_id, "k": 3},
+    )
+    assert ask.status_code == 409
+    assert "re-upload" in ask.json()["detail"].lower()
+
+
 def test_ask_stream_extractive(client, sample_pdf_bytes):
     ingest = client.post(
         "/ingest",

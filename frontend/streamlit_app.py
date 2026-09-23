@@ -266,11 +266,18 @@ with st.sidebar:
     docs = fetch_documents()
     if docs:
         labels = {
-            f"{d['filename']} ({d['page_count']}p · {d['id'][:8]}…)": d for d in docs[:15]
+            f"{d['filename']} ({d['page_count']}p · {d['id'][:8]}…"
+            f"{' · re-upload needed' if d.get('indexed') is False else ''})": d
+            for d in docs[:15]
         }
         choice = st.selectbox("Load a previous upload", ["—"] + list(labels.keys()))
         if choice != "—" and st.button("Use selected document", use_container_width=True):
             selected = labels[choice]
+            if selected.get("indexed") is False:
+                st.warning(
+                    "Index missing (common on free-tier sleep). Re-upload the PDF, "
+                    "or use Re-ingest after selecting a file."
+                )
             st.session_state.document_info = {
                 "document_id": selected["id"],
                 "pages": selected["page_count"],

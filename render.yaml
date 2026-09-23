@@ -1,17 +1,16 @@
+# Free-tier public demo on Render ($0 hosting; you only pay LLM usage).
+# Tradeoffs: web service sleeps when idle; no persistent disk (re-upload PDFs after wake);
+# free Postgres expires ~30 days after creation unless upgraded.
 services:
   - type: web
     name: ai-medical-insurance-checker
     env: docker
-    plan: starter
+    plan: free
     region: oregon
     branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health
-    disk:
-      name: faiss-data
-      mountPath: /app/data/faiss
-      sizeGB: 1
     envVars:
       - key: TAMUS_AI_CHAT_API_KEY
         sync: false
@@ -30,11 +29,13 @@ services:
       - key: APP_API_KEY
         generateValue: true
       - key: RATE_LIMIT_PER_MINUTE
-        value: "45"
+        value: "30"
+      - key: INGEST_RATE_LIMIT_PER_MINUTE
+        value: "8"
       - key: MAX_UPLOAD_MB
-        value: "20"
+        value: "10"
       - key: DOCUMENT_TTL_HOURS
-        value: "168"
+        value: "48"
       - key: DATABASE_URL
         fromDatabase:
           name: ai-medical-insurance-db
@@ -58,4 +59,4 @@ databases:
   - name: ai-medical-insurance-db
     databaseName: docsage
     user: docsage_user
-    plan: starter
+    plan: free

@@ -1,69 +1,70 @@
-# Deployment Guide
+# Deployment Guide (free hosting)
 
-Deploy the Coverage Checker with Docker Compose (local/demo) or Render (public).
+Goal: **$0 infrastructure**. The only ongoing cost should be your **LLM/embedding API**
+(TAMU Chat or OpenAI).
 
-## What this agent can / cannot do
+## Cost cheat sheet
 
-| Step | Status |
-|------|--------|
-| Repo deploy configs (`Dockerfile`, `render.yaml`, nginx entrypoint, FAISS disk) | Done in-repo |
-| Click **Deploy** on Render / pay for a plan | **You** — needs your Render login |
-| Set `TAMUS_AI_CHAT_API_KEY` (or OpenAI) in the host | **You** — secrets stay out of git |
+| Path | Hosting $ | Durable indexes? | Notes |
+|------|-----------|------------------|-------|
+| **Local Docker Compose** | $0 | Yes (local volumes) | Best free everyday use |
+| **Render Free blueprint** (`render.yaml`) | $0 | No (ephemeral disk) | Public URL; sleeps when idle; free Postgres ~30 days |
+| Render Starter + disk | ~$13+/mo | Yes | Only if you later want always-on |
 
-## Local demo (recommended)
+LLM usage is billed by your API provider in all cases.
+
+## 1. Local (recommended free path)
 
 ```bash
 cp backend/env.example backend/.env
-# edit keys in backend/.env
+# set TAMUS_AI_CHAT_API_KEY=... (or OPENAI_API_KEY)
 ./compose-up.sh
-# or: docker compose up --build
 ```
 
 - UI: http://localhost:8502  
-- API: http://localhost:8001/docs · health: http://localhost:8001/health  
-- Postgres host port: **5433**
+- API: http://localhost:8001/docs  
+- Postgres on host port **5433**; FAISS in the `faiss_data` volume  
 
-Production-ish local flags:
+Optional hardening still free locally:
 
 ```env
 ENABLE_AUTH=true
 APP_API_KEY=change-me
-RATE_LIMIT_PER_MINUTE=45
-INGEST_RATE_LIMIT_PER_MINUTE=10
-MAX_UPLOAD_MB=20
-DOCUMENT_TTL_HOURS=168
 ```
 
-## Render blueprint (public demo)
+## 2. Public free URL on Render
 
-1. Push `main` to GitHub: https://github.com/deeps45/AI-Medical-Insurance-Coverage-Checker  
-2. Render → **New + → Blueprint** → connect this repo (`render.yaml`)  
-3. Set secrets in the dashboard (do not commit them):
-   - `TAMUS_AI_CHAT_API_KEY` (preferred) **or** `OPENAI_API_KEY`
-   - Confirm `APP_API_KEY` (auto-generated) and `ENABLE_AUTH=true`
-4. Deploy. The blueprint creates:
-   - Web service (nginx → Streamlit UI + FastAPI `/health`, `/ask`, …)
-   - Postgres
-   - 1GB disk at `/app/data/faiss` so indexes survive redeploys
+1. Push `main`: https://github.com/deeps45/AI-Medical-Insurance-Coverage-Checker  
+2. [Render](https://dashboard.render.com) → **New + → Blueprint** → this repo  
+3. Confirm plans are **Free** (web + Postgres) — `render.yaml` already sets `plan: free`  
+4. Set **only** secrets (no paid add-ons):
+   - `TAMUS_AI_CHAT_API_KEY` **or** `OPENAI_API_KEY`
+5. Deploy — do **not** attach a paid disk
+
+### Free-tier behavior (important)
+
+- **Cold starts:** after ~15 minutes idle the web service sleeps; first request is slow.  
+- **No persistent disk:** FAISS indexes are wiped when the instance sleeps/redeploys → **re-upload the PDF** after wake.  
+- **Free Postgres:** expires about **30 days** after creation unless you upgrade; upgrade within the grace window or data is deleted.  
+- **Memory:** free instances are small (512MB). Prefer text PDFs over huge scans; if the service OOMs, use local Compose instead.
+
+The API returns a clear error when a document row exists but the vector index is gone (re-upload).
 
 After deploy:
 
 ```bash
 curl https://YOUR-SERVICE.onrender.com/health
-# UI opens at the same host; set APP_API_KEY in the Streamlit service env if split
 ```
 
-Pass the API key from the Streamlit container via `APP_API_KEY` (already wired in compose / combined image).
+Open the same host in a browser for the UI. `APP_API_KEY` is auto-generated; the combined image uses it for API calls.
 
 ## Single-container image
 
-Root `Dockerfile` runs:
+Root `Dockerfile` + `docker-entrypoint.sh`:
 
 1. FastAPI on `127.0.0.1:8000`  
 2. Streamlit on `127.0.0.1:8501`  
-3. nginx on `$PORT` routing API paths + UI  
-
-Entrypoint: `docker-entrypoint.sh`. Local multi-service stack still uses `docker-compose.yml`.
+3. nginx on `$PORT` (UI + `/health`, `/ask`, …)
 
 ## Smoke checks
 
@@ -75,7 +76,7 @@ python scripts/eval_sample_policies.py --base-url http://127.0.0.1:8001
 
 ## Ops notes
 
-- `POST /admin/cleanup` removes documents older than `DOCUMENT_TTL_HOURS` (also runs on API startup).  
-- Uploads reject non-PDF magic bytes and oversized files (`MAX_UPLOAD_MB`).  
-- Rotate any keys that were pasted into chat.  
+- `POST /admin/cleanup` respects `DOCUMENT_TTL_HOURS` (free blueprint uses `48`).  
+- Uploads enforce `%PDF` magic + `MAX_UPLOAD_MB` (free blueprint uses `10`).  
+- Rotate keys pasted into chat.  
 - Answers are assistive only — not official benefits advice.

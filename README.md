@@ -16,7 +16,7 @@ Upload a medical insurance policy PDF and ask plain-language questions about cov
 - **Streaming answers** (`/ask/stream`) and one-click **coverage summary** with field cards
 - PostgreSQL (or SQLite) storage for documents and query history
 - Streamlit UI: disclaimer gate, citation highlights, summary cards, transcript/JSON export
-- Docker Compose + **Render blueprint** (nginx fronting UI + API, FAISS disk)
+- Docker Compose + **free Render blueprint** ($0 hosting; LLM usage only)
 - Pytest suite offline without API keys; sample-policy eval harness (ACME / BlueCare / Summit)
 
 ## Architecture
@@ -268,9 +268,12 @@ DEPLOYMENT.md
 
 ## Deployment
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) and `render.yaml` for Render blueprint deployment.
+See [DEPLOYMENT.md](DEPLOYMENT.md). Default path is **free**:
 
-Set `TAMUS_AI_CHAT_API_KEY` (or `OPENAI_API_KEY`) and optionally `PINECONE_API_KEY` / `DATABASE_URL` in the host environment.
+- **Local Compose** — $0 hosting, durable FAISS + Postgres volumes  
+- **Render Free** (`render.yaml` uses `plan: free`) — public URL, sleeps when idle; re-upload PDFs after wake  
+
+You only pay LLM/embedding usage (TAMU or OpenAI). Avoid attaching paid disks or Starter plans unless you want always-on.
 
 ## Troubleshooting
 
@@ -319,10 +322,10 @@ docker compose logs db
 
 ## Production considerations
 
-- Use managed PostgreSQL; attach a disk for FAISS or switch to Pinecone
+- Prefer free local Compose or Render Free unless you need always-on + persistent disk
 - Keep rate limits + TTL cleanup enabled for multi-user demos
 - Monitor `/health` and review `samples/last_eval_report.json` after policy changes
-- Consider document versioning plus backup/recovery
+- On free Render, expect cold starts and re-ingest after sleep
 
 ## License
 

@@ -43,6 +43,7 @@ class DocumentInfo(BaseModel):
     chunk_count: int
     status: str = "ready"
     uploaded_at: str
+    indexed: bool = True
 
 
 class QueryInfo(BaseModel):
