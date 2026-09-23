@@ -202,6 +202,7 @@ class VectorStoreService:
         k: int = 4,
         document_id: Optional[str] = None,
     ) -> list[Any]:
+        """Return docs; attach approximate relevance score into metadata when available."""
         self._ensure_initialized()
         if self._backend_name == "unavailable":
             raise RuntimeError("Vector store is not available")
@@ -210,34 +211,86 @@ class VectorStoreService:
             return self._memory_search(query, k, document_id)
 
         if self._backend_name == "faiss":
-            if document_id:
-                store = self._load_faiss(document_id)
-                if store is None:
-                    return []
-                return store.similarity_search(query, k=k)
-            # Search across all known docs (best-effort)
-            results: list[Any] = []
-            for path in self.settings.faiss_dir.glob("*"):
-                if not path.is_dir():
-                    continue
-                store = self._load_faiss(path.name)
-                if store is None:
-                    continue
-                results.extend(store.similarity_search(query, k=k))
-            # crude re-rank by presence; truncate
-            return results[:k]
+            return self._faiss_search_with_scores(query, k, document_id)
 
         assert self._store is not None
         filter_dict = {"document_id": document_id} if document_id else None
-        if filter_dict:
+        try:
+            if filter_dict:
+                pairs = self._store.similarity_search_with_score(
+                    query, k=k, filter=filter_dict
+                )
+            else:
+                pairs = self._store.similarity_search_with_score(query, k=k)
+            return self._attach_scores(pairs)
+        except Exception:  # noqa: BLE001
+            if filter_dict:
+                try:
+                    return self._store.similarity_search(query, k=k, filter=filter_dict)
+                except Exception:  # noqa: BLE001
+                    docs = self._store.similarity_search(query, k=k * 3)
+                    return [
+                        d for d in docs if d.metadata.get("document_id") == document_id
+                    ][:k]
+            return self._store.similarity_search(query, k=k)
+
+    def _attach_scores(self, pairs: list[tuple[Any, float]]) -> list[Any]:
+        docs = []
+        for doc, score in pairs:
+            meta = dict(getattr(doc, "metadata", {}) or {})
+            # FAISS L2: lower is better → convert to similarity-ish 1/(1+d)
             try:
-                return self._store.similarity_search(query, k=k, filter=filter_dict)
-            except Exception:  # noqa: BLE001
-                docs = self._store.similarity_search(query, k=k * 3)
-                return [d for d in docs if d.metadata.get("document_id") == document_id][
-                    :k
-                ]
-        return self._store.similarity_search(query, k=k)
+                meta["score"] = round(float(1.0 / (1.0 + float(score))), 4)
+            except (TypeError, ValueError):
+                meta["score"] = None
+            doc.metadata = meta
+            docs.append(doc)
+        return docs
+
+    def _faiss_search_with_scores(
+        self, query: str, k: int, document_id: Optional[str]
+    ) -> list[Any]:
+        if document_id:
+            store = self._load_faiss(document_id)
+            if store is None:
+                return []
+            pairs = store.similarity_search_with_score(query, k=k)
+            return self._attach_scores(pairs)
+
+        scored: list[tuple[Any, float]] = []
+        for path in self.settings.faiss_dir.glob("*"):
+            if not path.is_dir():
+                continue
+            store = self._load_faiss(path.name)
+            if store is None:
+                continue
+            scored.extend(store.similarity_search_with_score(query, k=k))
+        scored.sort(key=lambda x: x[1])  # lower distance first
+        return self._attach_scores(scored[:k])
+
+    def _memory_search(
+        self,
+        query: str,
+        k: int,
+        document_id: Optional[str],
+    ) -> list[Any]:
+        from types import SimpleNamespace
+
+        tokens = {t.lower() for t in query.split() if len(t) > 2}
+        scored: list[tuple[float, dict]] = []
+        for item in self._local_texts:
+            if document_id and item["metadata"].get("document_id") != document_id:
+                continue
+            text_tokens = {t.lower() for t in item["text"].split()}
+            overlap = len(tokens & text_tokens)
+            scored.append((float(overlap), item))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        results = []
+        for score, item in scored[:k]:
+            meta = dict(item["metadata"])
+            meta["score"] = score
+            results.append(SimpleNamespace(page_content=item["text"], metadata=meta))
+        return results
 
     def delete_document(self, document_id: str) -> bool:
         """Remove vectors for a document. Returns True if something was removed."""
@@ -261,7 +314,6 @@ class VectorStoreService:
                 removed = True
             return removed
 
-        # Pinecone: delete by metadata filter when supported
         try:
             index = getattr(self._store, "_index", None) or getattr(
                 self._store, "index", None
@@ -270,7 +322,6 @@ class VectorStoreService:
                 index.delete(filter={"document_id": {"$eq": document_id}})
                 removed = True
             else:
-                # Fallback: delete known ids pattern
                 ids = [f"{document_id}-{i}" for i in range(5000)]
                 self._store.delete(ids=ids)  # type: ignore[attr-defined]
                 removed = True
@@ -286,29 +337,7 @@ class VectorStoreService:
             )
         if self._backend_name == "faiss":
             return self._doc_dir(document_id).exists()
-        return True  # pinecone: assume present if metadata says so
-
-    def _memory_search(
-        self,
-        query: str,
-        k: int,
-        document_id: Optional[str],
-    ) -> list[Any]:
-        from types import SimpleNamespace
-
-        tokens = {t.lower() for t in query.split() if len(t) > 2}
-        scored: list[tuple[float, dict]] = []
-        for item in self._local_texts:
-            if document_id and item["metadata"].get("document_id") != document_id:
-                continue
-            text_tokens = {t.lower() for t in item["text"].split()}
-            score = len(tokens & text_tokens)
-            scored.append((score, item))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [
-            SimpleNamespace(page_content=item["text"], metadata=item["metadata"])
-            for _, item in scored[:k]
-        ]
+        return True
 
 
 _vector_service: VectorStoreService | None = None

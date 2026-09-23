@@ -21,6 +21,7 @@ from schemas import (
     DocumentInfo,
     HealthResponse,
     IngestResponse,
+    QueryInfo,
     SourceInfo,
     SummaryRequest,
     SummaryResponse,
@@ -99,6 +100,7 @@ def _process_pdf(content: bytes, filename: str, document_id: str | None = None) 
             existing.filename = filename
             existing.page_count = len(pages)
             existing.chunk_count = len(chunks)
+            existing.status = "ready"
             existing.uploaded_at = datetime.utcnow()
         else:
             db.add(
@@ -107,6 +109,7 @@ def _process_pdf(content: bytes, filename: str, document_id: str | None = None) 
                     filename=filename,
                     page_count=len(pages),
                     chunk_count=len(chunks),
+                    status="ready",
                     uploaded_at=datetime.utcnow(),
                 )
             )
@@ -149,10 +152,49 @@ async def list_documents(_: str | None = Depends(require_api_key)):
                 filename=row.filename,
                 page_count=row.page_count,
                 chunk_count=row.chunk_count or 0,
+                status=getattr(row, "status", None) or "ready",
                 uploaded_at=row.uploaded_at.isoformat(),
             )
             for row in rows
         ]
+    finally:
+        db.close()
+
+
+@app.get("/queries", response_model=list[QueryInfo])
+async def list_queries(
+    document_id: str | None = None,
+    limit: int = 20,
+    _: str | None = Depends(require_api_key),
+):
+    limit = max(1, min(limit, 100))
+    db = SessionLocal()
+    try:
+        q = db.query(Query).order_by(Query.created_at.desc())
+        if document_id:
+            q = q.filter(Query.document_id == document_id)
+        rows = q.limit(limit).all()
+        results: list[QueryInfo] = []
+        for row in rows:
+            sources: list[SourceInfo] = []
+            raw = getattr(row, "sources_json", None)
+            if raw:
+                try:
+                    sources = [SourceInfo(**item) for item in json.loads(raw)]
+                except Exception:  # noqa: BLE001
+                    sources = []
+            results.append(
+                QueryInfo(
+                    id=row.id,
+                    document_id=row.document_id,
+                    question=row.question,
+                    answer=row.answer,
+                    sources=sources,
+                    latency_ms=row.latency_ms,
+                    created_at=row.created_at.isoformat(),
+                )
+            )
+        return results
     finally:
         db.close()
 
@@ -252,7 +294,7 @@ async def ask_question(
         answer = generate_answer(payload.question, docs, settings)
         latency_ms = (time.time() - start) * 1000
         sources = [SourceInfo(**item) for item in dedupe_sources(docs)]
-        _save_query(payload.document_id, payload.question, answer, latency_ms)
+        _save_query(payload.document_id, payload.question, answer, latency_ms, sources)
         return AskResponse(answer=answer, latency_ms=latency_ms, sources=sources)
     except HTTPException:
         raise
@@ -294,7 +336,13 @@ async def _ask_stream(payload: AskRequest):
             )
             yield f"data: {json.dumps({'type': 'token', 'content': msg})}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'latency_ms': (time.time()-start)*1000})}\n\n"
-            _save_query(payload.document_id, payload.question, msg, (time.time() - start) * 1000)
+            _save_query(
+                payload.document_id,
+                payload.question,
+                msg,
+                (time.time() - start) * 1000,
+                [SourceInfo(**s) for s in sources],
+            )
             return
 
         if resolve_provider(settings) == "none":
@@ -302,7 +350,13 @@ async def _ask_stream(payload: AskRequest):
             yield f"data: {json.dumps({'type': 'token', 'content': answer})}\n\n"
             latency = (time.time() - start) * 1000
             yield f"data: {json.dumps({'type': 'done', 'latency_ms': latency})}\n\n"
-            _save_query(payload.document_id, payload.question, answer, latency)
+            _save_query(
+                payload.document_id,
+                payload.question,
+                answer,
+                latency,
+                [SourceInfo(**s) for s in sources],
+            )
             return
 
         parts: list[str] = []
@@ -320,7 +374,13 @@ async def _ask_stream(payload: AskRequest):
             return
         answer = "".join(parts).strip()
         latency = (time.time() - start) * 1000
-        _save_query(payload.document_id, payload.question, answer, latency)
+        _save_query(
+            payload.document_id,
+            payload.question,
+            answer,
+            latency,
+            [SourceInfo(**s) for s in sources],
+        )
         yield f"data: {json.dumps({'type': 'done', 'latency_ms': latency})}\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
@@ -358,6 +418,7 @@ def _save_query(
     question: str,
     answer: str,
     latency_ms: float,
+    sources: list[SourceInfo] | None = None,
 ) -> None:
     db = SessionLocal()
     try:
@@ -367,6 +428,7 @@ def _save_query(
                 document_id=document_id,
                 question=question,
                 answer=answer,
+                sources_json=json.dumps([s.model_dump() for s in (sources or [])]),
                 latency_ms=latency_ms,
                 created_at=datetime.utcnow(),
             )

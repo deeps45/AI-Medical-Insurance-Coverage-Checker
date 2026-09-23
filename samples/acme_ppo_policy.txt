@@ -1,0 +1,34 @@
+ACME HEALTH PPO — MEMBER BENEFITS SUMMARY
+Policy Number: ACME-PPO-2024-001
+Plan Year: January 1, 2024 – December 31, 2024
+
+NETWORK BENEFITS
+- Annual Deductible (Individual): $1,500
+- Annual Deductible (Family): $3,000
+- Out-of-Pocket Maximum (Individual): $6,000
+- Out-of-Pocket Maximum (Family): $12,000
+- Primary Care Visit: $25 copay after deductible
+- Specialist Visit: $50 copay after deductible
+- Emergency Room: $250 copay (waived if admitted)
+- Urgent Care: $75 copay
+- MRI / CT Imaging: Covered with $100 copay after deductible
+- Inpatient Hospital: 20% coinsurance after deductible
+
+PRESCRIPTION DRUGS (RETAIL 30-DAY)
+- Tier 1 Generic: $10 copay
+- Tier 2 Preferred Brand: $40 copay
+- Tier 3 Non-Preferred: $80 copay
+- Specialty: $150 copay or 20% coinsurance (whichever greater)
+
+MENTAL HEALTH & SUBSTANCE USE
+- Outpatient therapy: $30 copay per session
+- No annual session limit for medically necessary care
+
+PHYSICAL THERAPY
+- $40 copay per session
+- Prior authorization required after 20 visits
+
+EXCLUSIONS
+- Cosmetic surgery
+- Experimental procedures not FDA approved
+- Care received outside the United States (except emergencies)

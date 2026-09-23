@@ -18,6 +18,8 @@ class SourceInfo(BaseModel):
     page: int | str
     source: str
     document_id: Optional[str] = None
+    score: Optional[float] = None
+    snippet: Optional[str] = None
 
 
 class AskResponse(BaseModel):
@@ -39,7 +41,18 @@ class DocumentInfo(BaseModel):
     filename: str
     page_count: int
     chunk_count: int
+    status: str = "ready"
     uploaded_at: str
+
+
+class QueryInfo(BaseModel):
+    id: str
+    document_id: Optional[str]
+    question: str
+    answer: str
+    sources: list[SourceInfo] = []
+    latency_ms: float
+    created_at: str
 
 
 class HealthResponse(BaseModel):

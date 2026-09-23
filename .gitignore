@@ -66,3 +66,4 @@ pinecone_test/
 faiss_index/
 data/
 backend/data/
+samples/last_eval_report.json

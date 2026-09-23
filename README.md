@@ -143,7 +143,7 @@ Tests use extractive answers and an in-memory/FAISS vector store — no API keys
 | POST | `/ingest` | Upload and index a PDF |
 | PUT | `/documents/{id}/reingest` | Replace vectors for an existing document |
 | DELETE | `/documents/{id}` | Delete document metadata + vectors |
-| POST | `/ask` | Ask a question (`question`, optional `k`, optional `document_id`) |
+| GET | `/queries` | Recent Q&A history (`document_id`, `limit`) |
 | POST | `/ask/stream` | Same as `/ask` but SSE token stream |
 | POST | `/summary` | One-click coverage snapshot for a document |
 
@@ -212,6 +212,7 @@ CREATE TABLE documents (
     filename VARCHAR NOT NULL,
     page_count INTEGER NOT NULL,
     chunk_count INTEGER NOT NULL DEFAULT 0,
+    status VARCHAR NOT NULL DEFAULT 'ready',
     uploaded_at TIMESTAMP NOT NULL
 );
 ```
@@ -221,9 +222,10 @@ CREATE TABLE documents (
 ```sql
 CREATE TABLE queries (
     id VARCHAR PRIMARY KEY,
-    document_id VARCHAR,
+    document_id VARCHAR REFERENCES documents(id),
     question TEXT NOT NULL,
     answer TEXT NOT NULL,
+    sources_json TEXT,
     latency_ms FLOAT NOT NULL,
     created_at TIMESTAMP NOT NULL
 );

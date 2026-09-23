@@ -186,6 +186,26 @@ with st.sidebar:
         st.caption("No documents yet.")
 
     st.divider()
+    st.markdown("**Saved Q&A (DB)**")
+    if info := st.session_state.get("document_info"):
+        try:
+            hist = requests.get(
+                f"{BASE_URL}/queries",
+                params={"document_id": info["document_id"], "limit": 5},
+                headers=api_headers(),
+                timeout=10,
+            )
+            if hist.status_code == 200 and hist.json():
+                for row in hist.json()[:5]:
+                    st.caption(f"• {row['question'][:60]}")
+            else:
+                st.caption("No saved queries yet.")
+        except requests.RequestException:
+            st.caption("Could not load query history.")
+    else:
+        st.caption("Select a document to see history.")
+
+    st.divider()
     st.markdown("**Tips**")
     st.markdown(
         "- Upload the full policy PDF\n"
@@ -375,10 +395,16 @@ for item in st.session_state.qa_history:
     st.markdown(f"**Q:** {item['question']}")
     st.info(item["answer"])
     if item.get("sources"):
-        source_labels = [
-            f"{s.get('source', '?')} · p{s.get('page', '?')}" for s in item["sources"]
-        ]
+        source_labels = []
+        for s in item["sources"]:
+            label = f"{s.get('source', '?')} · p{s.get('page', '?')}"
+            if s.get("score") is not None:
+                label += f" · score {s['score']}"
+            source_labels.append(label)
         st.caption("Sources: " + " · ".join(source_labels))
+        for s in item["sources"][:3]:
+            if s.get("snippet"):
+                st.caption(f"↳ {s['snippet']}")
     st.caption(f"{item['latency_ms']:.0f} ms · {item['ts']}")
     st.divider()
 

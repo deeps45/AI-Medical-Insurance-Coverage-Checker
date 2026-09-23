@@ -57,11 +57,14 @@ def dedupe_sources(docs: list[Any]) -> list[dict[str, Any]]:
         if key in seen:
             continue
         seen.add(key)
+        snippet = (getattr(doc, "page_content", "") or "")[:180].replace("\n", " ")
         sources.append(
             {
                 "page": meta.get("page", "Unknown"),
                 "source": meta.get("source", "Unknown"),
                 "document_id": meta.get("document_id"),
+                "score": meta.get("score"),
+                "snippet": snippet or None,
             }
         )
     return sources

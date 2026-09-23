@@ -1,0 +1,30 @@
+BLUECARE HMO — EVIDENCE OF COVERAGE (EXCERPT)
+Member ID example plan: BLUE-HMO-100
+Effective: Calendar year 2024
+
+COST SHARING
+- Annual Deductible: $500 individual / $1,000 family
+- Out-of-Pocket Maximum: $4,000 individual / $8,000 family
+- Primary Care Physician: $20 copay (deductible does not apply)
+- Specialist: Requires referral; $40 copay
+- Emergency Room: $150 copay
+- Ambulance: $100 copay
+
+DIAGNOSTIC SERVICES
+- Lab work: $0 after deductible at in-network labs
+- MRI: Prior authorization required; $75 copay after deductible
+- X-ray: $30 copay
+
+PHARMACY
+- Generic: $5 copay
+- Brand: $35 copay
+- Mail-order 90-day generic: $12
+
+PREVENTIVE CARE
+- Annual wellness visit: $0
+- Recommended immunizations: $0
+
+NOT COVERED
+- Acupuncture
+- Infertility services
+- Non-emergency out-of-network care without authorization
