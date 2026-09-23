@@ -167,7 +167,7 @@ def _require_document_index(document_id: str | None) -> None:
     if not document_id:
         return
     store = get_vector_store()
-    if store.backend_name == "faiss" and not store.has_document(document_id):
+    if store.backend_name in {"faiss", "memory"} and not store.has_document(document_id):
         raise HTTPException(
             status_code=409,
             detail=(
@@ -201,7 +201,7 @@ async def list_documents(_: str | None = Depends(require_api_key)):
         results: list[DocumentInfo] = []
         for row in rows:
             indexed = True
-            if store.backend_name == "faiss":
+            if store.backend_name in {"faiss", "memory"}:
                 indexed = store.has_document(row.id)
             results.append(
                 DocumentInfo(

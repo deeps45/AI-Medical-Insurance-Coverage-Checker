@@ -129,16 +129,15 @@ def test_ask_missing_index_returns_409(client, sample_pdf_bytes):
     assert ingest.status_code == 200
     document_id = ingest.json()["document_id"]
 
-    # Simulate free-tier ephemeral loss: drop on-disk index + in-memory cache
     from services.vector_store import get_vector_store
 
     store = get_vector_store()
+    # Drop vectors while leaving the DB document row (free-tier wake scenario)
+    assert store.delete_document(document_id) or True
     store._doc_stores.pop(document_id, None)
-    path = store._doc_dir(document_id)
-    if path.exists():
-        import shutil
-
-        shutil.rmtree(path)
+    store._local_texts = [
+        t for t in store._local_texts if t["metadata"].get("document_id") != document_id
+    ]
 
     ask = client.post(
         "/ask",
