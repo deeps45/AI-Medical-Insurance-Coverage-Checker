@@ -312,7 +312,7 @@ class VectorStoreService:
     ) -> list[Any]:
         from types import SimpleNamespace
 
-        from services.retrieval import keyword_score, reciprocal_rank_fusion
+        from services.retrieval import keyword_score, weighted_hybrid_fuse
 
         keyword_ranked: list[Any] = []
         scored_rows: list[tuple[float, dict]] = []
@@ -321,7 +321,12 @@ class VectorStoreService:
             if document_id and meta.get("document_id") != document_id:
                 continue
             text = item.get("text") or ""
-            scored_rows.append((keyword_score(query, text), item))
+            scored_rows.append(
+                (
+                    keyword_score(query, text, section=meta.get("section")),
+                    item,
+                )
+            )
         scored_rows.sort(key=lambda x: x[0], reverse=True)
         for score, item in scored_rows:
             if score <= 0:
@@ -336,15 +341,15 @@ class VectorStoreService:
             meta = getattr(doc, "metadata", {}) or {}
             return f"{meta.get('document_id')}|{meta.get('page')}|{getattr(doc, 'page_content', '')[:80]}"
 
-        fused = reciprocal_rank_fusion(
-            [vector_docs, keyword_ranked],
+        fused = weighted_hybrid_fuse(
+            vector_docs,
+            keyword_ranked,
             id_fn=doc_key,
         )
         # Prefer fused list; fall back to vector-only if keyword empty
         results = fused[:k] if fused else vector_docs[:k]
         for doc in results:
             meta = dict(getattr(doc, "metadata", {}) or {})
-            # Surface best available score for UI
             meta["score"] = meta.get("hybrid_score") or meta.get("keyword_score") or meta.get(
                 "score"
             )

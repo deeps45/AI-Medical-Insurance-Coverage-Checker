@@ -6,7 +6,12 @@ services:
     region: oregon
     branch: main
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /
+    dockerContext: .
+    healthCheckPath: /health
+    disk:
+      name: faiss-data
+      mountPath: /app/data/faiss
+      sizeGB: 1
     envVars:
       - key: TAMUS_AI_CHAT_API_KEY
         sync: false
@@ -21,23 +26,33 @@ services:
       - key: USE_LOCAL_VECTORSTORE
         value: "true"
       - key: ENABLE_AUTH
-        value: "false"
+        value: "true"
       - key: APP_API_KEY
-        sync: false
+        generateValue: true
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "45"
+      - key: MAX_UPLOAD_MB
+        value: "20"
+      - key: DOCUMENT_TTL_HOURS
+        value: "168"
       - key: DATABASE_URL
         fromDatabase:
           name: ai-medical-insurance-db
           property: connectionString
-      - key: BASE_URL
-        value: http://localhost:8000
       - key: RENDER
         value: "true"
       - key: TESSERACT_CMD
         value: /usr/bin/tesseract
       - key: FAISS_DIR
         value: /app/data/faiss
-      - key: PORT
-        value: "8501"
+      - key: API_PORT
+        value: "8000"
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: CHAT_MODEL
+        value: protected.gemini-2.5-flash-lite
+      - key: EMBEDDING_MODEL
+        value: protected.text-embedding-3-small
 
 databases:
   - name: ai-medical-insurance-db

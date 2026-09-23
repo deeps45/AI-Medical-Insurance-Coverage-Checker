@@ -30,6 +30,9 @@ services:
       - ENABLE_AUTH=${ENABLE_AUTH:-false}
       - APP_API_KEY=${APP_API_KEY:-}
       - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-60}
+      - INGEST_RATE_LIMIT_PER_MINUTE=${INGEST_RATE_LIMIT_PER_MINUTE:-30}
+      - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-20}
+      - DOCUMENT_TTL_HOURS=${DOCUMENT_TTL_HOURS:-168}
     env_file:
       - ./backend/.env
     volumes:

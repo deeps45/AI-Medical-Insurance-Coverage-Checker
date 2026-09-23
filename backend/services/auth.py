@@ -43,6 +43,18 @@ class RateLimiter:
 rate_limiter = RateLimiter()
 
 
+def rate_limiter_check_for_path(request: Request, provided: str | None) -> None:
+    settings = get_settings()
+    client = _client_id(request, provided)
+    path = request.url.path
+    if path.endswith("/ingest") or "/reingest" in path:
+        limit = settings.ingest_rate_limit_per_minute
+    else:
+        limit = settings.rate_limit_per_minute
+    if limit > 0:
+        rate_limiter.check(client, limit)
+
+
 async def require_api_key(
     request: Request,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
@@ -66,9 +78,7 @@ async def require_api_key(
         if provided != settings.api_key:
             raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-    client = _client_id(request, provided)
-    if settings.rate_limit_per_minute > 0:
-        rate_limiter.check(client, settings.rate_limit_per_minute)
+    rate_limiter_check_for_path(request, provided)
     return provided
 
 

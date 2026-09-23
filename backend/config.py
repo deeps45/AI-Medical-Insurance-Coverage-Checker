@@ -29,6 +29,9 @@ class Settings:
     rate_limit_per_minute: int
     faiss_dir: Path
     enable_auth: bool
+    max_upload_mb: int
+    document_ttl_hours: int
+    ingest_rate_limit_per_minute: int
 
 
 def get_settings() -> Settings:
@@ -68,4 +71,9 @@ def get_settings() -> Settings:
         rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "60")),
         faiss_dir=faiss_dir,
         enable_auth=os.getenv("ENABLE_AUTH", "false").lower() in {"1", "true", "yes"},
+        max_upload_mb=max(1, int(os.getenv("MAX_UPLOAD_MB", "20"))),
+        document_ttl_hours=max(0, int(os.getenv("DOCUMENT_TTL_HOURS", "168"))),
+        ingest_rate_limit_per_minute=max(
+            1, int(os.getenv("INGEST_RATE_LIMIT_PER_MINUTE", "10"))
+        ),
     )

@@ -81,3 +81,10 @@ class DeleteResponse(BaseModel):
     document_id: str
     deleted: bool
     message: str
+
+
+class CleanupResponse(BaseModel):
+    documents: int
+    queries: int
+    skipped: int = 0
+    message: str = ""

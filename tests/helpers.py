@@ -22,9 +22,12 @@ def make_settings(**overrides) -> Settings:
         qa_mode="extractive",
         cors_origins=["*"],
         api_key=None,
-        rate_limit_per_minute=60,
+        rate_limit_per_minute=1000,
         faiss_dir=Path("./data/faiss"),
         enable_auth=False,
+        max_upload_mb=20,
+        document_ttl_hours=168,
+        ingest_rate_limit_per_minute=1000,
     )
     base.update(overrides)
     return Settings(**base)

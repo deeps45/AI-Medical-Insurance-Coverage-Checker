@@ -17,14 +17,15 @@ def test_chunk_pages_keeps_er_line_together():
     )
     chunks = chunk_pages([PageText(page_number=1, text=text)], chunk_size=450, chunk_overlap=40)
     assert chunks
-    er_chunks = [c for c, _ in chunks if "Emergency Room" in c and "$250" in c]
+    er_chunks = [c for c, _, _ in chunks if "Emergency Room" in c and "$250" in c]
     assert er_chunks, f"ER line should stay intact; got: {chunks}"
     best = max(er_chunks, key=lambda c: ("Emergency Room" in c) + ("$250" in c))
     assert "Emergency Room: $250" in best
     # Benefit bullets should not share a chunk with unrelated lines
     assert "Annual Deductible" not in best
     assert "MENTAL HEALTH" not in best
-    assert any("MRI" in c and "Annual Deductible" not in c for c, _ in chunks)
+    assert any("MRI" in c and "Annual Deductible" not in c for c, _, _ in chunks)
+    assert any(sec == "NETWORK BENEFITS" for _, _, sec in chunks)
 
 
 def test_expand_query_er_synonyms():

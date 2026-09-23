@@ -104,6 +104,23 @@ def test_empty_pdf_rejected(client):
     assert response.status_code == 400
 
 
+def test_reject_non_pdf_magic(client):
+    response = client.post(
+        "/ingest",
+        files={"file": ("fake.pdf", b"not-a-real-pdf", "application/pdf")},
+    )
+    assert response.status_code == 400
+    assert "PDF" in response.json()["detail"]
+
+
+def test_cleanup_endpoint(client):
+    resp = client.post("/admin/cleanup")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "documents" in body
+    assert "queries" in body
+
+
 def test_ask_stream_extractive(client, sample_pdf_bytes):
     ingest = client.post(
         "/ingest",

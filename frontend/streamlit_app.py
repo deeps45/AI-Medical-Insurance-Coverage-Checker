@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import html
 import json
 import os
+import re
 import time
 
 import requests
@@ -13,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DEFAULT_BASE_URL = (
-    "http://localhost:8001" if os.getenv("RENDER") != "true" else "http://localhost:8000"
+    "http://localhost:8001" if os.getenv("RENDER") != "true" else "http://127.0.0.1:8000"
 )
 BASE_URL = os.getenv("BASE_URL", DEFAULT_BASE_URL)
 APP_API_KEY = os.getenv("APP_API_KEY", "")
@@ -28,11 +30,40 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 1.5rem; max-width: 1100px; }
+      .block-container { padding-top: 1.25rem; max-width: 1100px; }
+      .cite-chip {
+        display: inline-block; background: #e8f1ff; color: #0b3d91;
+        border-radius: 4px; padding: 0 6px; margin: 0 2px; font-weight: 600;
+        font-size: 0.85em;
+      }
+      .snippet-box {
+        background: #f7f8fa; border-left: 3px solid #0b3d91;
+        padding: 0.55rem 0.75rem; margin: 0.35rem 0 0.6rem;
+        font-size: 0.9rem; color: #222;
+      }
+      .field-card {
+        background: #f4f7fb; border: 1px solid #d9e2ef; border-radius: 8px;
+        padding: 0.65rem 0.8rem; margin-bottom: 0.5rem; min-height: 4.5rem;
+      }
+      .field-label { font-size: 0.75rem; color: #5b6b7c; text-transform: uppercase; letter-spacing: .03em; }
+      .field-value { font-size: 0.95rem; color: #12263a; margin-top: 0.25rem; }
+      .disclaimer-banner {
+        background: #fff8e8; border: 1px solid #f0d9a0; border-radius: 8px;
+        padding: 0.85rem 1rem; margin-bottom: 1rem;
+      }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+FIELD_LABELS = {
+    "annual_deductible": "Annual deductible",
+    "out_of_pocket_maximum": "Out-of-pocket max",
+    "emergency_room_copay": "ER copay",
+    "mri_coverage": "MRI",
+    "specialist_copay": "Specialist",
+    "prescription_drugs": "Prescriptions",
+}
 
 
 def api_headers() -> dict:
@@ -40,6 +71,20 @@ def api_headers() -> dict:
     if APP_API_KEY:
         headers["X-API-Key"] = APP_API_KEY
     return headers
+
+
+def friendly_error(resp_or_exc) -> str:
+    if isinstance(resp_or_exc, requests.Response):
+        try:
+            detail = resp_or_exc.json().get("detail")
+            if isinstance(detail, str):
+                return detail
+            if detail is not None:
+                return str(detail)
+        except Exception:  # noqa: BLE001
+            pass
+        return resp_or_exc.text[:400] or f"HTTP {resp_or_exc.status_code}"
+    return str(resp_or_exc)
 
 
 def check_backend() -> dict | None:
@@ -70,14 +115,30 @@ def init_state() -> None:
         "qa_history": [],
         "example_question": "",
         "stream_answer": True,
+        "disclaimer_accepted": False,
+        "last_summary_fields": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
+def highlight_citations(text: str) -> str:
+    escaped = html.escape(text or "")
+    return re.sub(
+        r"\[p(\d+)\]",
+        r'<span class="cite-chip">[p\1]</span>',
+        escaped,
+        flags=re.IGNORECASE,
+    ).replace("\n", "<br/>")
+
+
 def history_transcript() -> str:
-    lines = []
+    lines = [
+        "AI Medical Insurance Coverage Checker — Q&A transcript",
+        "Assistive only — not official benefits advice.",
+        "",
+    ]
     for item in reversed(st.session_state.qa_history):
         lines.append(f"Q: {item['question']}")
         lines.append(f"A: {item['answer']}")
@@ -86,9 +147,23 @@ def history_transcript() -> str:
                 f"{s.get('source', '?')} p{s.get('page', '?')}" for s in item["sources"]
             )
             lines.append(f"Sources: {src}")
+            for s in item["sources"][:3]:
+                if s.get("snippet"):
+                    lines.append(f"  ↳ {s['snippet']}")
         lines.append(f"Latency: {item['latency_ms']:.0f} ms")
         lines.append("")
     return "\n".join(lines).strip() + "\n"
+
+
+def history_json() -> str:
+    return json.dumps(
+        {
+            "document": st.session_state.get("document_info"),
+            "disclaimer": "Assistive only — not official benefits advice.",
+            "qa": st.session_state.qa_history,
+        },
+        indent=2,
+    )
 
 
 def ask_streaming(payload: dict) -> tuple[str, list, float]:
@@ -104,7 +179,7 @@ def ask_streaming(payload: dict) -> tuple[str, list, float]:
         timeout=120,
     ) as response:
         if response.status_code != 200:
-            raise RuntimeError(response.text)
+            raise RuntimeError(friendly_error(response))
         for raw in response.iter_lines(decode_unicode=True):
             if not raw or not raw.startswith("data: "):
                 continue
@@ -114,12 +189,51 @@ def ask_streaming(payload: dict) -> tuple[str, list, float]:
                 sources = event.get("sources", [])
             elif etype == "token":
                 answer_parts.append(event.get("content", ""))
-                placeholder.info("".join(answer_parts))
+                placeholder.markdown(
+                    highlight_citations("".join(answer_parts)),
+                    unsafe_allow_html=True,
+                )
             elif etype == "error":
                 raise RuntimeError(event.get("detail", "stream error"))
             elif etype == "done":
                 latency_ms = float(event.get("latency_ms", 0))
     return "".join(answer_parts).strip(), sources, latency_ms
+
+
+def render_answer_block(item: dict) -> None:
+    st.markdown(f"**Q:** {item['question']}")
+    st.markdown(
+        f'<div class="snippet-box">{highlight_citations(item["answer"])}</div>',
+        unsafe_allow_html=True,
+    )
+    if item.get("fields"):
+        cols = st.columns(3)
+        for i, (key, value) in enumerate(item["fields"].items()):
+            if not value:
+                continue
+            with cols[i % 3]:
+                st.markdown(
+                    f'<div class="field-card"><div class="field-label">'
+                    f"{html.escape(FIELD_LABELS.get(key, key))}</div>"
+                    f'<div class="field-value">{html.escape(str(value))}</div></div>',
+                    unsafe_allow_html=True,
+                )
+    if item.get("sources"):
+        source_labels = []
+        for s in item["sources"]:
+            label = f"{s.get('source', '?')} · p{s.get('page', '?')}"
+            if s.get("score") is not None:
+                label += f" · score {s['score']}"
+            source_labels.append(label)
+        st.caption("Sources: " + " · ".join(source_labels))
+        for s in item["sources"][:3]:
+            if s.get("snippet"):
+                st.markdown(
+                    f'<div class="snippet-box">↳ {html.escape(s["snippet"])}</div>',
+                    unsafe_allow_html=True,
+                )
+    st.caption(f"{item['latency_ms']:.0f} ms · {item['ts']}")
+    st.divider()
 
 
 init_state()
@@ -164,6 +278,7 @@ with st.sidebar:
                 "filename": selected["filename"],
             }
             st.session_state.qa_history = []
+            st.session_state.last_summary_fields = None
             st.rerun()
         if choice != "—" and st.button("Delete selected document", use_container_width=True):
             selected = labels[choice]
@@ -178,10 +293,11 @@ with st.sidebar:
                 ) == selected["id"]:
                     st.session_state.document_info = None
                     st.session_state.qa_history = []
+                    st.session_state.last_summary_fields = None
                 st.success("Document deleted")
                 st.rerun()
             else:
-                st.error(del_resp.text)
+                st.error(friendly_error(del_resp))
     else:
         st.caption("No documents yet.")
 
@@ -206,11 +322,11 @@ with st.sidebar:
         st.caption("Select a document to see history.")
 
     st.divider()
-    st.markdown("**Tips**")
+    st.markdown("**How to read results**")
     st.markdown(
-        "- Upload the full policy PDF\n"
-        "- Ask about copays, deductibles, exclusions\n"
-        "- Use Coverage summary for a quick snapshot"
+        "- Answers cite pages like `[p3]`\n"
+        "- Snippets show the policy lines retrieved\n"
+        "- Always confirm with your insurer SBC / EOC"
     )
     st.warning(
         "Assistive only — not official benefits advice. "
@@ -221,6 +337,23 @@ st.title("Medical Insurance Coverage Checker")
 st.markdown(
     "Upload a policy PDF, then ask questions about coverage, copays, and benefits."
 )
+
+if not st.session_state.disclaimer_accepted:
+    st.markdown(
+        '<div class="disclaimer-banner"><strong>Before you start</strong><br/>'
+        "This tool summarizes uploaded policy text for education and navigation. "
+        "It is <em>not</em> a determination of benefits, not legal advice, and not "
+        "affiliated with your insurer. Always verify with official plan documents "
+        "or member services before making care decisions.</div>",
+        unsafe_allow_html=True,
+    )
+    if st.checkbox(
+        "I understand answers are assistive only and I will verify with my insurer",
+        key="disclaimer_box",
+    ):
+        st.session_state.disclaimer_accepted = True
+        st.rerun()
+    st.stop()
 
 st.subheader("1. Upload policy")
 uploaded_file = st.file_uploader("Insurance policy PDF", type=["pdf"])
@@ -245,12 +378,13 @@ if process and uploaded_file is not None:
                 result = response.json()
                 st.session_state.document_info = result
                 st.session_state.qa_history = []
+                st.session_state.last_summary_fields = None
                 st.success(
                     f"Processed **{result.get('filename', uploaded_file.name)}** — "
                     f"{result['pages']} pages, {result['chunks']} chunks"
                 )
             else:
-                st.error(f"Processing failed: {response.text}")
+                st.error(f"Processing failed: {friendly_error(response)}")
         except requests.RequestException as exc:
             st.error(f"Could not reach backend: {exc}")
 
@@ -269,9 +403,10 @@ if reingest and uploaded_file is not None and st.session_state.document_info:
         if response.status_code == 200:
             st.session_state.document_info = response.json()
             st.session_state.qa_history = []
+            st.session_state.last_summary_fields = None
             st.success("Document re-ingested")
         else:
-            st.error(response.text)
+            st.error(friendly_error(response))
 
 info = st.session_state.document_info
 if info:
@@ -299,6 +434,7 @@ if st.button("Coverage summary", type="secondary"):
             )
             if response.status_code == 200:
                 result = response.json()
+                st.session_state.last_summary_fields = result.get("fields") or {}
                 st.session_state.qa_history.insert(
                     0,
                     {
@@ -306,13 +442,30 @@ if st.button("Coverage summary", type="secondary"):
                         "answer": result["summary"],
                         "latency_ms": result["latency_ms"],
                         "sources": result.get("sources", []),
+                        "fields": result.get("fields") or {},
                         "ts": time.strftime("%H:%M:%S"),
                     },
                 )
             else:
-                st.error(response.text)
+                st.error(friendly_error(response))
         except requests.RequestException as exc:
             st.error(str(exc))
+
+if st.session_state.last_summary_fields:
+    st.markdown("**Coverage snapshot cards**")
+    cols = st.columns(3)
+    shown = 0
+    for key, label in FIELD_LABELS.items():
+        value = st.session_state.last_summary_fields.get(key)
+        if not value:
+            continue
+        with cols[shown % 3]:
+            st.markdown(
+                f'<div class="field-card"><div class="field-label">{label}</div>'
+                f'<div class="field-value">{html.escape(str(value))}</div></div>',
+                unsafe_allow_html=True,
+            )
+        shown += 1
 
 examples = [
     "Is MRI covered under this policy?",
@@ -321,6 +474,8 @@ examples = [
     "Are prescription drugs covered?",
     "What's the out-of-pocket maximum?",
     "Is physical therapy covered?",
+    "Is cosmetic surgery covered?",
+    "Does MRI need prior authorization?",
 ]
 
 with st.expander("Example questions", expanded=not st.session_state.qa_history):
@@ -363,7 +518,7 @@ if ask and question.strip():
                     timeout=90,
                 )
                 if response.status_code != 200:
-                    raise RuntimeError(response.text)
+                    raise RuntimeError(friendly_error(response))
                 result = response.json()
                 answer = result["answer"]
                 sources = result.get("sources", [])
@@ -384,28 +539,24 @@ if ask and question.strip():
         st.error(f"Ask failed: {exc}")
 
 if st.session_state.qa_history:
-    st.download_button(
-        "Download Q&A transcript",
+    d1, d2 = st.columns(2)
+    d1.download_button(
+        "Download Q&A transcript (.txt)",
         data=history_transcript(),
         file_name="coverage-qa.txt",
         mime="text/plain",
     )
+    d2.download_button(
+        "Download Q&A export (.json)",
+        data=history_json(),
+        file_name="coverage-qa.json",
+        mime="application/json",
+    )
 
 for item in st.session_state.qa_history:
-    st.markdown(f"**Q:** {item['question']}")
-    st.info(item["answer"])
-    if item.get("sources"):
-        source_labels = []
-        for s in item["sources"]:
-            label = f"{s.get('source', '?')} · p{s.get('page', '?')}"
-            if s.get("score") is not None:
-                label += f" · score {s['score']}"
-            source_labels.append(label)
-        st.caption("Sources: " + " · ".join(source_labels))
-        for s in item["sources"][:3]:
-            if s.get("snippet"):
-                st.caption(f"↳ {s['snippet']}")
-    st.caption(f"{item['latency_ms']:.0f} ms · {item['ts']}")
-    st.divider()
+    render_answer_block(item)
 
-st.caption("Coverage Checker · TAMU Chat / OpenAI · Pinecone/FAISS · Streamlit")
+st.caption(
+    "Coverage Checker · TAMU Chat / OpenAI · Pinecone/FAISS · Streamlit · "
+    "Not official benefits advice"
+)

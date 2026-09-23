@@ -17,6 +17,7 @@ from db import Document, Query, SessionLocal, init_db
 from schemas import (
     AskRequest,
     AskResponse,
+    CleanupResponse,
     DeleteResponse,
     DocumentInfo,
     HealthResponse,
@@ -27,6 +28,7 @@ from schemas import (
     SummaryResponse,
 )
 from services.auth import require_api_key
+from services.cleanup import cleanup_expired_documents
 from services.llm import resolve_provider, stream_chat_completion
 from services.pdf_extractor import chunk_pages, extract_pages_from_pdf
 from services.qa import build_messages, dedupe_sources, generate_answer
@@ -42,7 +44,7 @@ init_db()
 app = FastAPI(
     title="AI Medical Insurance Coverage Checker",
     description="Upload insurance PDFs and ask coverage questions with RAG",
-    version="3.0.0",
+    version="3.1.0",
 )
 
 app.add_middleware(
@@ -52,6 +54,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def _startup_cleanup() -> None:
+    try:
+        cleanup_expired_documents(settings, vector_store=get_vector_store())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Startup TTL cleanup skipped: %s", exc)
+
+
+def _validate_pdf_bytes(content: bytes, filename: str | None) -> None:
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    if not filename or not filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are supported. Please upload a .pdf policy document.",
+        )
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF must be {settings.max_upload_mb}MB or smaller.",
+        )
+    if not content.lstrip().startswith(b"%PDF"):
+        raise HTTPException(
+            status_code=400,
+            detail="File does not look like a valid PDF (missing %PDF header).",
+        )
 
 
 def _db_status() -> str:
@@ -78,8 +109,13 @@ def _process_pdf(content: bytes, filename: str, document_id: str | None = None) 
 
     texts = [c[0] for c in chunks]
     metadatas = [
-        {"source": filename, "page": page_num, "document_id": document_id}
-        for _, page_num in chunks
+        {
+            "source": filename,
+            "page": page_num,
+            "document_id": document_id,
+            "section": section,
+        }
+        for _, page_num, section in chunks
     ]
 
     store = get_vector_store()
@@ -204,22 +240,21 @@ async def ingest_document(
     file: UploadFile = File(...),
     _: str | None = Depends(require_api_key),
 ):
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
-
     content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
-    if len(content) > 25 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="PDF must be 25MB or smaller")
-
     try:
-        return _process_pdf(content, file.filename)
+        _validate_pdf_bytes(content, file.filename)
+    except HTTPException:
+        raise
+    try:
+        return _process_pdf(content, file.filename or "policy.pdf")
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("Error processing PDF")
-        raise HTTPException(status_code=500, detail=f"Error processing PDF: {exc}") from exc
+        raise HTTPException(
+            status_code=500,
+            detail="Could not process this PDF. Try a text-based policy export, or a clearer scan.",
+        ) from exc
 
 
 @app.put("/documents/{document_id}/reingest", response_model=IngestResponse)
@@ -232,23 +267,23 @@ async def reingest_document(
     try:
         existing = db.query(Document).filter(Document.id == document_id).first()
         if not existing:
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise HTTPException(status_code=404, detail="Document not found. Upload a policy first.")
     finally:
         db.close()
 
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
     content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    _validate_pdf_bytes(content, file.filename)
 
     try:
-        return _process_pdf(content, file.filename, document_id=document_id)
+        return _process_pdf(content, file.filename or "policy.pdf", document_id=document_id)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("Error re-ingesting PDF")
-        raise HTTPException(status_code=500, detail=f"Error re-ingesting PDF: {exc}") from exc
+        raise HTTPException(
+            status_code=500,
+            detail="Re-ingest failed. Confirm the file is a readable PDF and try again.",
+        ) from exc
 
 
 @app.delete("/documents/{document_id}", response_model=DeleteResponse)
@@ -275,6 +310,22 @@ async def delete_document(
     )
 
 
+@app.post("/admin/cleanup", response_model=CleanupResponse)
+async def admin_cleanup(_: str | None = Depends(require_api_key)):
+    """Remove documents older than DOCUMENT_TTL_HOURS (0 disables TTL)."""
+    result = cleanup_expired_documents(settings, vector_store=get_vector_store())
+    return CleanupResponse(
+        documents=result["documents"],
+        queries=result["queries"],
+        skipped=result.get("skipped", 0),
+        message=(
+            "TTL disabled"
+            if result.get("skipped")
+            else f"Removed {result['documents']} expired document(s)"
+        ),
+    )
+
+
 @app.post("/ask", response_model=AskResponse)
 async def ask_question(
     payload: AskRequest,
@@ -282,7 +333,12 @@ async def ask_question(
 ):
     store = get_vector_store()
     if not store.is_ready:
-        raise HTTPException(status_code=503, detail="Vector store not available")
+        raise HTTPException(
+            status_code=503,
+            detail="Search index unavailable. Check LLM/embedding credentials and try again.",
+        )
+    if not payload.question.strip():
+        raise HTTPException(status_code=400, detail="Please enter a non-empty question.")
 
     start = time.time()
     try:
@@ -303,7 +359,8 @@ async def ask_question(
     except Exception as exc:  # noqa: BLE001
         logger.exception("Error processing question")
         raise HTTPException(
-            status_code=500, detail=f"Error processing question: {exc}"
+            status_code=500,
+            detail="Could not answer right now. Try again, or rephrase the question.",
         ) from exc
 
 

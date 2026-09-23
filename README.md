@@ -7,16 +7,17 @@ Upload a medical insurance policy PDF and ask plain-language questions about cov
 ## Features
 
 - PDF text extraction via PyMuPDF, with Tesseract OCR fallback for scanned pages
-- RAG Q&A with accurate per-chunk page metadata and optional document scoping
+- **Section-aware chunking** + **hybrid retrieval** (FAISS + keyword / weighted fusion)
+- RAG Q&A with page citations, query-aware source snippets, and optional document scoping
 - TAMU Chat API (preferred) or OpenAI for chat + embeddings
 - **Persistent per-document FAISS indexes** (survive restarts) or Pinecone in production
-- **Delete / re-ingest** document APIs for clean policy management
-- Optional **API key auth** (`ENABLE_AUTH` + `APP_API_KEY`) and per-client **rate limiting**
-- **Streaming answers** (`/ask/stream`) and one-click **coverage summary**
+- **Delete / re-ingest**, **document TTL cleanup**, upload size + PDF magic validation
+- Optional **API key auth** (`ENABLE_AUTH` + `APP_API_KEY`) and per-client **rate limiting** (stricter on ingest)
+- **Streaming answers** (`/ask/stream`) and one-click **coverage summary** with field cards
 - PostgreSQL (or SQLite) storage for documents and query history
-- Streamlit UI with example questions, answer history, citations, and latency
-- Docker Compose stack ready for local runs and Render-style deploys
-- Pytest suite that runs offline without API keys (+ OCR when Tesseract is installed)
+- Streamlit UI: disclaimer gate, citation highlights, summary cards, transcript/JSON export
+- Docker Compose + **Render blueprint** (nginx fronting UI + API, FAISS disk)
+- Pytest suite offline without API keys; sample-policy eval harness (ACME / BlueCare / Summit)
 
 ## Architecture
 
@@ -144,8 +145,10 @@ Tests use extractive answers and an in-memory/FAISS vector store — no API keys
 | PUT | `/documents/{id}/reingest` | Replace vectors for an existing document |
 | DELETE | `/documents/{id}` | Delete document metadata + vectors |
 | GET | `/queries` | Recent Q&A history (`document_id`, `limit`) |
+| POST | `/ask` | Answer a coverage question with sources |
 | POST | `/ask/stream` | Same as `/ask` but SSE token stream |
 | POST | `/summary` | One-click coverage snapshot for a document |
+| POST | `/admin/cleanup` | Delete documents older than `DOCUMENT_TTL_HOURS` |
 
 ### Upload PDF
 
@@ -244,6 +247,9 @@ CREATE TABLE queries (
 | `FAISS_DIR` | On-disk FAISS root (default `./data/faiss`) |
 | `ENABLE_AUTH` / `APP_API_KEY` | Optional API key gate (`X-API-Key` or Bearer) |
 | `RATE_LIMIT_PER_MINUTE` | Per-client limit (default 60) |
+| `INGEST_RATE_LIMIT_PER_MINUTE` | Stricter ingest/reingest limit (default 10) |
+| `MAX_UPLOAD_MB` | Max PDF upload size (default 20) |
+| `DOCUMENT_TTL_HOURS` | Auto-delete age; `0` disables (default 168) |
 | `QA_MODE=extractive` | Skip LLM chat (tests / offline demos) |
 | `CHAT_MODEL` / `EMBEDDING_MODEL` | Model IDs (TAMU uses `protected.*` names) |
 | `DATABASE_URL` | Postgres or SQLite connection string |
@@ -305,17 +311,17 @@ docker compose logs db
 
 ## Security notes
 
-- This is an MVP: no end-user authentication
+- Enable `ENABLE_AUTH=true` + `APP_API_KEY` before exposing publicly (Render blueprint defaults auth on)
 - Never commit `backend/.env`
+- Uploads are size-capped and checked for a `%PDF` header
 - Answers are assistive only — verify against your official plan documents
 - API keys stay in environment variables / Docker secrets
 
 ## Production considerations
 
-- Add authentication and user management
-- Implement rate limiting
-- Add monitoring and structured logging
-- Use managed PostgreSQL (and Pinecone or equivalent) in production
+- Use managed PostgreSQL; attach a disk for FAISS or switch to Pinecone
+- Keep rate limits + TTL cleanup enabled for multi-user demos
+- Monitor `/health` and review `samples/last_eval_report.json` after policy changes
 - Consider document versioning plus backup/recovery
 
 ## License

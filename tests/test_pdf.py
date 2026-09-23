@@ -20,10 +20,11 @@ def test_chunk_pages_preserves_page_numbers(sample_policy_text):
     ]
     chunks = chunk_pages(pages, chunk_size=200, chunk_overlap=40)
     assert chunks
-    assert all(isinstance(page, int) and page >= 1 for _, page in chunks)
-    page_nums = {page for _, page in chunks}
+    assert all(isinstance(page, int) and page >= 1 for _, page, _ in chunks)
+    page_nums = {page for _, page, _ in chunks}
     assert 1 in page_nums
     assert 2 in page_nums
+    assert any(section for _, _, section in chunks)
 
 
 def test_empty_pdf_returns_no_pages():

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
+# Back-compat: local stack launcher.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-cd "$ROOT"
-docker compose up --build "$@"
+exec "$ROOT/compose-up.sh" "$@"

@@ -17,6 +17,8 @@ os.environ["USE_LOCAL_VECTORSTORE"] = "true"
 os.environ["QA_MODE"] = "extractive"
 os.environ["ENABLE_AUTH"] = "false"
 os.environ["DATABASE_URL"] = "sqlite:///./pytest_coverage.db"
+os.environ["RATE_LIMIT_PER_MINUTE"] = "1000"
+os.environ["INGEST_RATE_LIMIT_PER_MINUTE"] = "1000"
 os.environ.pop("OPENAI_API_KEY", None)
 os.environ.pop("PINECONE_API_KEY", None)
 os.environ.pop("TAMUS_AI_CHAT_API_KEY", None)
@@ -97,6 +99,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("ENABLE_AUTH", "false")
     monkeypatch.setenv("FAISS_DIR", str(tmp_path / "faiss"))
     monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "1000")
+    monkeypatch.setenv("INGEST_RATE_LIMIT_PER_MINUTE", "1000")
     monkeypatch.delenv("TAMUS_AI_CHAT_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("APP_API_KEY", raising=False)
@@ -109,8 +112,10 @@ def client(tmp_path, monkeypatch):
     importlib.reload(config)
     importlib.reload(db)
 
+    from services.auth import rate_limiter
     from services.vector_store import VectorStoreService, reset_vector_store
 
+    rate_limiter._hits.clear()
     reset_vector_store(VectorStoreService(settings=config.get_settings()))
 
     import app as app_module

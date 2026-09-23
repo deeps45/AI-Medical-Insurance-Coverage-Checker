@@ -114,15 +114,22 @@ def _split_into_sections(text: str) -> list[str]:
     flush_prose()
     return sections or [text]
 
+def _section_name(section: str) -> str:
+    first = section.split("\n", 1)[0].strip()
+    if _is_section_header(first):
+        return first
+    return "GENERAL"
+
+
 def chunk_pages(
     pages: list[PageText],
     chunk_size: int = 450,
     chunk_overlap: int = 60,
-) -> list[tuple[str, int]]:
+) -> list[tuple[str, int, str]]:
     """
     Split page texts into smaller, section-aware chunks.
 
-    Returns list of (chunk_text, page_number) pairs with accurate page metadata.
+    Returns list of (chunk_text, page_number, section) triples.
     """
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -133,16 +140,16 @@ def chunk_pages(
         separators=["\n\n", "\n- ", "\n", ". ", " ", ""],
     )
 
-    results: list[tuple[str, int]] = []
+    results: list[tuple[str, int, str]] = []
     for page in pages:
         for section in _split_into_sections(page.text):
+            section_name = _section_name(section)
             labeled = f"[Page {page.page_number}]\n{section}"
             if len(labeled) <= chunk_size:
-                results.append((labeled, page.page_number))
+                results.append((labeled, page.page_number, section_name))
                 continue
             for chunk in splitter.split_text(labeled):
-                # Ensure page tag survives secondary splits
                 if not chunk.startswith("[Page "):
                     chunk = f"[Page {page.page_number}]\n{chunk}"
-                results.append((chunk, page.page_number))
+                results.append((chunk, page.page_number, section_name))
     return results
