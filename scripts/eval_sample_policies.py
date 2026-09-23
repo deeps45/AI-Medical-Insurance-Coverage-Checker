@@ -27,10 +27,12 @@ CASES = [
             {
                 "q": "What is the ER copay?",
                 "expect_any": ["250", "$250"],
+                "expect_source_any": ["Emergency Room", "250", "ER"],
             },
             {
                 "q": "Is MRI covered and what is the copay?",
                 "expect_any": ["100", "MRI", "covered"],
+                "expect_source_any": ["MRI", "100"],
             },
         ],
     },
@@ -120,8 +122,16 @@ def main() -> int:
             body = ask.json()
             answer = body["answer"]
             ok = any(tok.lower() in answer.lower() for tok in item["expect_any"])
-            status = "PASS" if ok else "FAIL"
-            if ok:
+            source_ok = True
+            expect_src = item.get("expect_source_any") or []
+            if expect_src and body.get("sources"):
+                blob = " ".join(
+                    f"{s.get('snippet') or ''} {s.get('source') or ''}"
+                    for s in body["sources"][:2]
+                )
+                source_ok = any(tok.lower() in blob.lower() for tok in expect_src)
+            status = "PASS" if ok and source_ok else "FAIL"
+            if ok and source_ok:
                 passed += 1
             else:
                 failed += 1
@@ -131,8 +141,10 @@ def main() -> int:
                 s0 = body["sources"][0]
                 print(
                     f"         source p{s0.get('page')} score={s0.get('score')} "
-                    f"snippet={(s0.get('snippet') or '')[:60]}"
+                    f"snippet={(s0.get('snippet') or '')[:90]}"
                 )
+            if not source_ok:
+                print("         !! source snippet did not match expected terms")
             report.append(
                 {
                     "doc": case["pdf_name"],

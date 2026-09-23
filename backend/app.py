@@ -293,7 +293,9 @@ async def ask_question(
         )
         answer = generate_answer(payload.question, docs, settings)
         latency_ms = (time.time() - start) * 1000
-        sources = [SourceInfo(**item) for item in dedupe_sources(docs)]
+        sources = [
+            SourceInfo(**item) for item in dedupe_sources(docs, query=payload.question)
+        ]
         _save_query(payload.document_id, payload.question, answer, latency_ms, sources)
         return AskResponse(answer=answer, latency_ms=latency_ms, sources=sources)
     except HTTPException:
@@ -323,7 +325,7 @@ async def _ask_stream(payload: AskRequest):
         k=payload.k or 4,
         document_id=payload.document_id,
     )
-    sources = dedupe_sources(docs)
+    sources = dedupe_sources(docs, query=payload.question)
     context = "\n\n".join(doc.page_content for doc in docs) if docs else ""
 
     def event_gen():

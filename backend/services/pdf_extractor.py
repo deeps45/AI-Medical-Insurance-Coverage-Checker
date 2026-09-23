@@ -1,10 +1,11 @@
-"""PDF text extraction with OCR fallback."""
+"""PDF text extraction with OCR fallback and section-aware chunking."""
 
 from __future__ import annotations
 
 import io
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 import fitz
@@ -56,13 +57,70 @@ def extract_pages_from_pdf(content: bytes, tesseract_cmd: str | None = None) -> 
     return pages
 
 
+def _normalize_policy_text(text: str) -> str:
+    """Normalize bullets/dashes so section splits are consistent."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("·", "-").replace("•", "-")
+    # Ensure section headers sit on their own lines when jammed together
+    text = re.sub(r"([a-z0-9\)])\s*([A-Z][A-Z][A-Z][A-Z]+)", r"\1\n\2", text)
+    return text
+
+
+def _is_section_header(line: str) -> bool:
+    # ALL-CAPS benefit headers; allow digits, &, /, -, and parentheses
+    return bool(re.match(r"^[A-Z][A-Z0-9 /&\-()]{3,}$", line)) and not line.startswith("-")
+
+
+def _split_into_sections(text: str) -> list[str]:
+    """
+    Prefer one benefit fact per chunk.
+
+    ALL-CAPS headers are repeated as a prefix on each bullet so retrieval can
+    match "Emergency Room" without drowning it in deductible lines.
+    """
+    text = _normalize_policy_text(text)
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    sections: list[str] = []
+    header: str | None = None
+    prose: list[str] = []
+
+    def flush_prose() -> None:
+        nonlocal prose
+        if prose:
+            sections.append("\n".join(prose))
+            prose = []
+
+    for line in lines:
+        is_header = _is_section_header(line)
+        is_bullet = line.startswith("-") or bool(re.match(r"^\d+[\.\)]\s", line))
+        if is_header:
+            flush_prose()
+            header = line
+            continue
+        if is_bullet:
+            flush_prose()
+            if header:
+                sections.append(f"{header}\n{line}")
+            else:
+                sections.append(line)
+            continue
+        # Non-bullet prose (title lines, etc.)
+        if header and not prose:
+            # Detach from prior benefit header once narrative resumes
+            header = None
+        prose.append(line)
+        if len("\n".join(prose)) >= 420:
+            flush_prose()
+    flush_prose()
+    return sections or [text]
+
 def chunk_pages(
     pages: list[PageText],
-    chunk_size: int = 1000,
-    chunk_overlap: int = 200,
+    chunk_size: int = 450,
+    chunk_overlap: int = 60,
 ) -> list[tuple[str, int]]:
     """
-    Split page texts into overlapping chunks.
+    Split page texts into smaller, section-aware chunks.
 
     Returns list of (chunk_text, page_number) pairs with accurate page metadata.
     """
@@ -72,12 +130,19 @@ def chunk_pages(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         length_function=len,
+        separators=["\n\n", "\n- ", "\n", ". ", " ", ""],
     )
 
     results: list[tuple[str, int]] = []
     for page in pages:
-        # Prefix helps the LLM cite pages even when metadata is lost
-        labeled = f"[Page {page.page_number}]\n{page.text}"
-        for chunk in splitter.split_text(labeled):
-            results.append((chunk, page.page_number))
+        for section in _split_into_sections(page.text):
+            labeled = f"[Page {page.page_number}]\n{section}"
+            if len(labeled) <= chunk_size:
+                results.append((labeled, page.page_number))
+                continue
+            for chunk in splitter.split_text(labeled):
+                # Ensure page tag survives secondary splits
+                if not chunk.startswith("[Page "):
+                    chunk = f"[Page {page.page_number}]\n{chunk}"
+                results.append((chunk, page.page_number))
     return results

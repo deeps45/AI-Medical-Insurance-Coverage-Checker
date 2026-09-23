@@ -45,7 +45,40 @@ def build_messages(question: str, context: str) -> list[dict[str, str]]:
     ]
 
 
-def dedupe_sources(docs: list[Any]) -> list[dict[str, Any]]:
+def best_snippet(text: str, query: str | None = None, *, max_len: int = 180) -> str:
+    """Pick a short snippet, preferring the line that best matches the query."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+    if not lines:
+        return cleaned[:max_len].replace("\n", " ")
+
+    if query:
+        from services.retrieval import keyword_score
+
+        best_line = max(lines, key=lambda ln: keyword_score(query, ln))
+        idx = lines.index(best_line)
+        parts: list[str] = []
+        if idx > 0 and best_line.startswith("-"):
+            prev = lines[idx - 1]
+            if prev == prev.upper() and any(c.isalpha() for c in prev):
+                parts.append(prev)
+        parts.append(best_line)
+        snippet = " ".join(parts)
+    else:
+        snippet = " ".join(lines)
+
+    if len(snippet) > max_len:
+        snippet = snippet[: max_len - 1] + "…"
+    return snippet.replace("\n", " ")
+
+
+def dedupe_sources(
+    docs: list[Any],
+    *,
+    query: str | None = None,
+) -> list[dict[str, Any]]:
     """Unique (source, page, document_id) triples preserving retrieval order."""
     seen: set[tuple] = set()
     sources: list[dict[str, Any]] = []
@@ -57,7 +90,7 @@ def dedupe_sources(docs: list[Any]) -> list[dict[str, Any]]:
         if key in seen:
             continue
         seen.add(key)
-        snippet = (getattr(doc, "page_content", "") or "")[:180].replace("\n", " ")
+        snippet = best_snippet(getattr(doc, "page_content", "") or "", query)
         sources.append(
             {
                 "page": meta.get("page", "Unknown"),

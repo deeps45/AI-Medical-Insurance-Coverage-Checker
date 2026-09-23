@@ -137,6 +137,29 @@ class VectorStoreService:
         meta_path = path / "meta.json"
         meta_path.write_text(json.dumps({"document_id": document_id}))
 
+    def _save_chunk_corpus(
+        self, document_id: str, texts: list[str], metadatas: list[dict[str, Any]]
+    ) -> None:
+        path = self._doc_dir(document_id)
+        path.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for text, meta in zip(texts, metadatas):
+            rows.append({"text": text, "metadata": meta})
+        (path / "chunks.jsonl").write_text(
+            "\n".join(json.dumps(row) for row in rows) + ("\n" if rows else "")
+        )
+
+    def _load_chunk_corpus(self, document_id: str) -> list[dict[str, Any]]:
+        path = self._doc_dir(document_id) / "chunks.jsonl"
+        if not path.exists():
+            return []
+        rows = []
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            rows.append(json.loads(line))
+        return rows
+
     def _load_faiss(self, document_id: str) -> Any | None:
         if document_id in self._doc_stores:
             return self._doc_stores[document_id]
@@ -187,6 +210,7 @@ class VectorStoreService:
             )
             self._doc_stores[document_id] = store
             self._save_faiss(document_id, store)
+            self._save_chunk_corpus(document_id, texts, metadatas)
             return
 
         # Pinecone
@@ -202,37 +226,130 @@ class VectorStoreService:
         k: int = 4,
         document_id: Optional[str] = None,
     ) -> list[Any]:
-        """Return docs; attach approximate relevance score into metadata when available."""
+        """Hybrid retrieval: vector candidates + keyword/RRF re-rank."""
         self._ensure_initialized()
         if self._backend_name == "unavailable":
             raise RuntimeError("Vector store is not available")
 
+        from services.retrieval import expand_query
+
+        expanded = expand_query(query)
+        fetch_k = max(k * 4, 12)
+
         if self._backend_name == "memory":
-            return self._memory_search(query, k, document_id)
+            return self._hybrid_from_corpus(
+                query=expanded,
+                k=k,
+                vector_docs=self._memory_search(expanded, fetch_k, document_id),
+                corpus=self._local_texts,
+                document_id=document_id,
+            )
 
         if self._backend_name == "faiss":
-            return self._faiss_search_with_scores(query, k, document_id)
+            vector_docs = self._faiss_search_with_scores(expanded, fetch_k, document_id)
+            corpus: list[dict[str, Any]] = []
+            if document_id:
+                corpus = self._load_chunk_corpus(document_id)
+            else:
+                for path in self.settings.faiss_dir.glob("*"):
+                    if path.is_dir():
+                        corpus.extend(self._load_chunk_corpus(path.name))
+            return self._hybrid_from_corpus(
+                query=expanded,
+                k=k,
+                vector_docs=vector_docs,
+                corpus=corpus,
+                document_id=document_id,
+            )
 
+        # Pinecone: re-rank vector hits with keywords (no full corpus locally)
         assert self._store is not None
         filter_dict = {"document_id": document_id} if document_id else None
         try:
             if filter_dict:
                 pairs = self._store.similarity_search_with_score(
-                    query, k=k, filter=filter_dict
+                    expanded, k=fetch_k, filter=filter_dict
                 )
             else:
-                pairs = self._store.similarity_search_with_score(query, k=k)
-            return self._attach_scores(pairs)
+                pairs = self._store.similarity_search_with_score(expanded, k=fetch_k)
+            vector_docs = self._attach_scores(pairs)
         except Exception:  # noqa: BLE001
             if filter_dict:
                 try:
-                    return self._store.similarity_search(query, k=k, filter=filter_dict)
+                    vector_docs = self._store.similarity_search(
+                        expanded, k=fetch_k, filter=filter_dict
+                    )
                 except Exception:  # noqa: BLE001
-                    docs = self._store.similarity_search(query, k=k * 3)
-                    return [
-                        d for d in docs if d.metadata.get("document_id") == document_id
-                    ][:k]
-            return self._store.similarity_search(query, k=k)
+                    docs = self._store.similarity_search(expanded, k=fetch_k * 2)
+                    vector_docs = [
+                        d
+                        for d in docs
+                        if d.metadata.get("document_id") == document_id
+                    ][:fetch_k]
+            else:
+                vector_docs = self._store.similarity_search(expanded, k=fetch_k)
+
+        corpus = [
+            {"text": d.page_content, "metadata": dict(d.metadata or {})}
+            for d in vector_docs
+        ]
+        return self._hybrid_from_corpus(
+            query=expanded,
+            k=k,
+            vector_docs=vector_docs,
+            corpus=corpus,
+            document_id=document_id,
+        )
+
+    def _hybrid_from_corpus(
+        self,
+        *,
+        query: str,
+        k: int,
+        vector_docs: list[Any],
+        corpus: list[dict[str, Any]],
+        document_id: Optional[str],
+    ) -> list[Any]:
+        from types import SimpleNamespace
+
+        from services.retrieval import keyword_score, reciprocal_rank_fusion
+
+        keyword_ranked: list[Any] = []
+        scored_rows: list[tuple[float, dict]] = []
+        for item in corpus:
+            meta = item.get("metadata") or {}
+            if document_id and meta.get("document_id") != document_id:
+                continue
+            text = item.get("text") or ""
+            scored_rows.append((keyword_score(query, text), item))
+        scored_rows.sort(key=lambda x: x[0], reverse=True)
+        for score, item in scored_rows:
+            if score <= 0:
+                continue
+            meta = dict(item.get("metadata") or {})
+            meta["keyword_score"] = round(float(score), 4)
+            keyword_ranked.append(
+                SimpleNamespace(page_content=item["text"], metadata=meta)
+            )
+
+        def doc_key(doc: Any) -> str:
+            meta = getattr(doc, "metadata", {}) or {}
+            return f"{meta.get('document_id')}|{meta.get('page')}|{getattr(doc, 'page_content', '')[:80]}"
+
+        fused = reciprocal_rank_fusion(
+            [vector_docs, keyword_ranked],
+            id_fn=doc_key,
+        )
+        # Prefer fused list; fall back to vector-only if keyword empty
+        results = fused[:k] if fused else vector_docs[:k]
+        for doc in results:
+            meta = dict(getattr(doc, "metadata", {}) or {})
+            # Surface best available score for UI
+            meta["score"] = meta.get("hybrid_score") or meta.get("keyword_score") or meta.get(
+                "score"
+            )
+            doc.metadata = meta
+        return results
 
     def _attach_scores(self, pairs: list[tuple[Any, float]]) -> list[Any]:
         docs = []
